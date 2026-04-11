@@ -79,3 +79,17 @@ go-game/
 - `"targetPlatforms": ["emery"]`
 - Rocky.js apps do NOT use `"watchapp"` section the same way as C apps
 - JS entry point is `src/rocky/index.js`
+
+## Developer references
+
+* SDK Documentation: https://developer.repebble.com/docs/
+* Alloy: https://developer.repebble.com/guides/alloy/
+* Build a Watchface in JS (Alloy): https://developer.repebble.com/tutorials/alloy-watchface-tutorial/part1/
+* Build a Watchface in JS (Alloy): https://developer.repebble.com/tutorials/alloy-watchface-tutorial/part2/
+* User settings: https://developer.repebble.com/tutorials/alloy-watchface-tutorial/part6/
+* Guides / Alloy / Storage: https://developer.repebble.com/guides/alloy/storage/
+* Guides / Alloy / Poco Graphics: https://developer.repebble.com/guides/alloy/poco-guide/
+* Guides / Alloy / Piu UI Framework: https://developer.repebble.com/guides/alloy/piu-guide/
+* App resources: https://developer.repebble.com/guides/app-resources/
+* Moddable SDK: https://www.moddable.com/documentation/readme
+* Developer Examples: https://developer.repebble.com/examples/
