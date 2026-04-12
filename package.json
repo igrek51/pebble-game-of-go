@@ -4,14 +4,15 @@
   "version": "1.0.0",
   "keywords": ["pebble-app"],
   "private": true,
-  "dependencies": {},
   "pebble": {
     "displayName": "Go 9x9",
     "uuid": "a3d92e7c-4f8a-4b2e-9d1f-8c7a5b6d9e2f",
     "sdkVersion": "3",
-    "projectType": "rocky",
+    "projectType": "native",
     "targetPlatforms": ["emery"],
-    "enableMultiJS": true,
+    "watchapp": {
+      "watchface": false
+    },
     "resources": {
       "media": []
     }

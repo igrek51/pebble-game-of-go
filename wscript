@@ -1,5 +1,3 @@
-import os.path
-
 top = '.'
 out = 'build'
 
@@ -11,14 +9,13 @@ def configure(ctx):
 
 def build(ctx):
     ctx.load('pebble_sdk')
-
-    # For a pure JS Rocky.js app, we don't compile C.
-    # The build system should handle packaging JS and resources.
-    
-    # If pbl_bundle is still needed for packaging JS, it might be called differently.
-    # For now, let's assume pebble build will handle JS packaging directly.
-    # If not, we may need to re-add a simplified pbl_bundle call for JS.
-    
-    # Removed C compilation and binaries setup.
-    # Removed old pbl_bundle call related to C binaries.
-    pass # Placeholder, may need to be adjusted if pebble build requires more for JS.
+    binaries = []
+    for p in ctx.env.TARGET_PLATFORMS:
+        ctx.set_env(ctx.all_envs[p])
+        ctx.set_group(ctx.env.PLATFORM_NAME)
+        app_elf = '{}/pebble-app.elf'.format(ctx.env.BUILD_DIR)
+        ctx.pbl_program(source=ctx.path.ant_glob('src/c/**/*.c'), target=app_elf)
+        binaries.append({'platform': p, 'app_elf': app_elf})
+    ctx.set_group('bundle')
+    ctx.pbl_bundle(binaries=binaries,
+                   js=ctx.path.ant_glob(['src/pkjs/**/*.js', 'src/pkjs/**/*.json']))

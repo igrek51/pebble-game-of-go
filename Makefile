@@ -38,8 +38,8 @@ logs:
 
 screenshot: install
 	@echo "Capturing screenshot from emulator..."
-	pebble screenshot --no-open --emulator emery screenshot-emery.png
-	@echo "✓ Screenshot saved: screenshot-emery.png"
+	pebble screenshot --no-open --emulator emery /tmp/screenshot-emery.png
+	@echo "✓ Screenshot saved: /tmp/screenshot-emery.png"
 
 # Alternative: install to connected device via Bluetooth
 install-device: build

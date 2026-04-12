@@ -5,7 +5,7 @@
 ### Platform
 - Device: Pebble Time 2 (emery)
 - Display: 200×228 px, rectangular, 64-color
-- Language: **JavaScript** — runs on the watch itself
+- Language: **JavaScript** or **C**
 
 ### Game Rules
 - 9×9 board, Chinese rules
