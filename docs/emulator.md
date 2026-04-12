@@ -38,7 +38,7 @@ A reliable workflow for interacting with the Pebble emulator has been establishe
 2.  **Agent Control:** Once the emulator window is persistent, the agent can:
     *   **Detect its presence:** Use `ps ax | grep qemu-pebble`.
     *   **Send button presses:** Use `pebble emu-button click <button> --emulator emery`.
-    *   **Capture screenshots:** Use `pebble screenshot --no-open --emulator emery <filename.png>`.
+    *   **Capture screenshots:** Use `pebble screenshot --no-open --emulator emery /tmp/pebble-screenshot.png`.
     *   **Install/reinstall apps:** Use `pebble install --emulator emery`.
 
 This reliable control mechanism now allows for thorough testing and debugging of Pebble applications.
