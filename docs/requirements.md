@@ -5,7 +5,7 @@
 ### Platform
 - Device: Pebble Time 2 (emery)
 - Display: 200×228 px, rectangular, 64-color
-- Language: **JavaScript (Rocky.js)** — runs on the watch itself
+- Language: **JavaScript** — runs on the watch itself
 
 ### Game Rules
 - 9×9 board, Chinese rules
@@ -52,13 +52,6 @@ Additional actions (e.g. long-press SELECT or dedicated sequence):
 - Board origin: approximately x=28, y=22
 - Stone radius: ~8 px
 
-### Rocky.js Notes
-- Use `Rocky.on('draw', ctx => { ... })` for all rendering
-- Use `Rocky.on('button', ({ button, action }) => { ... })` for input
-- Canvas API is a subset of HTML5 Canvas (arc, fillRect, strokeRect, fillText, etc.)
-- No floating point issues in JS; use integer pixel math for clarity
-- `Rocky.requestDraw()` to trigger a redraw after state change
-
 ### Go Logic Algorithms
 - **Liberty check:** BFS/DFS from a stone following same-color neighbors; count empty neighbors
 - **Capture:** after placing, check all adjacent opponent groups; remove any with 0 liberties; then check if placed stone's group has liberties (suicide check)
@@ -67,18 +60,8 @@ Additional actions (e.g. long-press SELECT or dedicated sequence):
 
 ### File Structure
 ```
-go-game/
-├── package.json        # Rocky.js app config, "rocky" platform
-├── wscript
-└── src/
-    └── rocky/
-        └── index.js    # all game logic + rendering
+TO BE DONE
 ```
-
-### package.json differences for Rocky.js
-- `"targetPlatforms": ["emery"]`
-- Rocky.js apps do NOT use `"watchapp"` section the same way as C apps
-- JS entry point is `src/rocky/index.js`
 
 ## Developer references
 
