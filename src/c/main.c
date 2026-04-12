@@ -5,12 +5,13 @@
 #define BLACK 1
 #define WHITE 2
 
-#define CELL_SIZE 20
+#define CELL_SIZE 21
 #define STONE_RADIUS 7
 
-// Centered board: (200 - 180) / 2 = 10, (228 - 20 - 180) / 2 + 20 = 34
-#define BOARD_ORIGIN_X 10
-#define BOARD_ORIGIN_Y 34
+// Bigger board with breathing room from coordinates: 9 * 21 = 189px
+// Space for row labels on left + gap, space for column labels on top + gap
+#define BOARD_ORIGIN_X 14
+#define BOARD_ORIGIN_Y 33
 
 // UI States
 typedef enum {
@@ -92,8 +93,8 @@ static bool try_place_stone(int row, int col) {
     // Switch player
     current_player = (current_player == BLACK) ? WHITE : BLACK;
 
-    // Reset selection
-    selected_row = 0;
+    // Keep selected row, reset to row selection phase
+    // selected_row stays the same
     selected_col = 0;
     ui_state = SELECTING_ROW;
 
@@ -248,8 +249,8 @@ static void handle_click(ClickRecognizerRef recognizer, void *context) {
                 if (selected_row < BOARD_SIZE - 1) selected_row++;
                 break;
             case BUTTON_ID_SELECT:
-                // Move to column selection
-                selected_col = 0;
+                // Move to column selection, start at middle column
+                selected_col = BOARD_SIZE / 2;
                 ui_state = SELECTING_COL;
                 break;
             case BUTTON_ID_BACK:
