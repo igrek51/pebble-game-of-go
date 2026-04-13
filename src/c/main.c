@@ -37,7 +37,8 @@ typedef enum {
 typedef enum {
     MODE_PVP,      // Player vs Player
     MODE_BLACK_AI, // Black is AI
-    MODE_WHITE_AI  // White is AI
+    MODE_WHITE_AI, // White is AI
+    MODE_AI_AI     // AI vs AI
 } GameMode;
 
 static GameMode game_mode = MODE_WHITE_AI;  // Default: Black (human) vs AI (White)
@@ -138,8 +139,8 @@ static void init_board(void) {
         ai_move_timer = NULL;
     }
 
-    // Start AI move if Black is AI and goes first
-    if (game_mode == MODE_BLACK_AI) {
+    // Start AI move if Black is AI or in AI vs AI mode
+    if (game_mode == MODE_BLACK_AI || game_mode == MODE_AI_AI) {
         ai_move_timer = app_timer_register(500, ai_move_callback, NULL);
     }
 }
@@ -574,6 +575,8 @@ static void mode_select_callback(int index, void *context) {
         game_mode = MODE_WHITE_AI;  // Black vs AI = human Black vs AI White
     } else if (index == 2) {
         game_mode = MODE_BLACK_AI;  // White vs AI = human White vs AI Black
+    } else if (index == 3) {
+        game_mode = MODE_AI_AI;  // AI vs AI
     }
     init_board();
     hide_mode_select();
@@ -652,15 +655,17 @@ static void show_mode_select(void) {
         GRect bounds = layer_get_bounds(window_layer);
 
         // Set up mode selection items
-        static SimpleMenuItem mode_items[3];
+        static SimpleMenuItem mode_items[4];
         mode_items[0].title = "Player vs Player";
         mode_items[0].callback = mode_select_callback;
         mode_items[1].title = "Black vs AI";
         mode_items[1].callback = mode_select_callback;
         mode_items[2].title = "White vs AI";
         mode_items[2].callback = mode_select_callback;
+        mode_items[3].title = "AI vs AI";
+        mode_items[3].callback = mode_select_callback;
 
-        mode_sections[0].num_items = 3;
+        mode_sections[0].num_items = 4;
         mode_sections[0].items = mode_items;
 
         // Create mode menu layer
@@ -677,6 +682,46 @@ static void hide_mode_select(void) {
     if (!s_mode_window) return;
     window_stack_remove(s_mode_window, true);
     layer_mark_dirty(s_canvas_layer);
+}
+
+// Check if any legal move exists anywhere on the board
+static bool can_make_legal_move(void) {
+    uint8_t opponent = (current_player == BLACK) ? WHITE : BLACK;
+
+    for (int row = 0; row < BOARD_SIZE; row++) {
+        for (int col = 0; col < BOARD_SIZE; col++) {
+            int idx = board_index(row, col);
+            if (board[idx] != EMPTY) continue;
+
+            // Try placing a stone
+            uint8_t temp_board[BOARD_SIZE * BOARD_SIZE];
+            memcpy(temp_board, board, sizeof(board));
+
+            board[idx] = current_player;
+
+            // Check for captures
+            const int dr[] = {-1, 1, 0, 0};
+            const int dc[] = {0, 0, -1, 1};
+            for (int d = 0; d < 4; d++) {
+                int nr = row + dr[d];
+                int nc = col + dc[d];
+                int nidx = board_index(nr, nc);
+                if (nidx < 0) continue;
+                if (board[nidx] == opponent && count_liberties(nr, nc, opponent) == 0) {
+                    remove_group(nr, nc, opponent);
+                }
+            }
+
+            // Check if this move is legal (not suicide)
+            bool legal = count_liberties(row, col, current_player) > 0;
+
+            memcpy(board, temp_board, sizeof(board));
+
+            if (legal) return true;
+        }
+    }
+
+    return false;
 }
 
 // AI move timer callback - make the AI move
@@ -698,8 +743,20 @@ static void try_make_ai_move(void) {
 
     bool is_black_ai = (game_mode == MODE_BLACK_AI && current_player == BLACK);
     bool is_white_ai = (game_mode == MODE_WHITE_AI && current_player == WHITE);
+    bool is_ai_ai = (game_mode == MODE_AI_AI);
 
-    if (!is_black_ai && !is_white_ai) return;
+    if (!is_black_ai && !is_white_ai && !is_ai_ai) return;
+
+    // Check if any legal move exists
+    if (!can_make_legal_move()) {
+        do_pass();
+        layer_mark_dirty(s_canvas_layer);
+        // Schedule next AI move if in AI vs AI mode
+        if (game_mode == MODE_AI_AI && ui_state == VIEW) {
+            ai_move_timer = app_timer_register(1000, ai_move_callback, NULL);
+        }
+        return;
+    }
 
     uint8_t opponent = (current_player == BLACK) ? WHITE : BLACK;
     int best_row = -1, best_col = -1;
@@ -804,7 +861,8 @@ static void try_make_ai_move(void) {
     // Schedule next AI move if needed
     if (ui_state == VIEW) {
         bool next_is_ai = (game_mode == MODE_BLACK_AI && current_player == BLACK) ||
-                          (game_mode == MODE_WHITE_AI && current_player == WHITE);
+                          (game_mode == MODE_WHITE_AI && current_player == WHITE) ||
+                          (game_mode == MODE_AI_AI);
         if (next_is_ai) {
             ai_move_timer = app_timer_register(1000, ai_move_callback, NULL);
         }
@@ -1114,7 +1172,7 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
         snprintf(label, sizeof(label), "%d", BOARD_SIZE - row);  // 9 to 1
         graphics_draw_text(ctx, label,
             fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
-            GRect(5, y - 7, 10, 14),
+            GRect(5, y - 10, 10, 14),
             GTextOverflowModeWordWrap,
             GTextAlignmentCenter,
             NULL);
