@@ -401,29 +401,28 @@ static void menu_select_callback(int index, void *context) {
 
 // Show menu window
 static void show_menu(void) {
-    if (s_menu_window) return;  // Already open
+    // Create menu window only once
+    if (!s_menu_window) {
+        s_menu_window = window_create();
+        Layer *window_layer = window_get_root_layer(s_menu_window);
+        GRect bounds = layer_get_bounds(window_layer);
 
-    s_menu_window = window_create();
+        // Set up menu items
+        static SimpleMenuItem items[2];
+        items[0].title = "PASS";
+        items[0].callback = menu_select_callback;
+        items[1].title = "NEW GAME";
+        items[1].callback = menu_select_callback;
 
-    Layer *window_layer = window_get_root_layer(s_menu_window);
-    GRect bounds = layer_get_bounds(window_layer);
+        menu_sections[0].num_items = 2;
+        menu_sections[0].items = items;
 
-    // Set up menu items
-    static SimpleMenuItem items[2];
-    items[0].title = "PASS";
-    items[0].callback = menu_select_callback;
-    items[1].title = "NEW GAME";
-    items[1].callback = menu_select_callback;
+        // Create menu layer
+        s_menu_layer = simple_menu_layer_create(bounds, s_menu_window, menu_sections, 1, NULL);
+        layer_add_child(window_layer, simple_menu_layer_get_layer(s_menu_layer));
+    }
 
-    menu_sections[0].num_items = 2;
-    menu_sections[0].items = items;
-
-    // Create menu layer with frame, window, sections, and section count
-    s_menu_layer = simple_menu_layer_create(bounds, s_menu_window, menu_sections, 1, NULL);
-
-    // Add to window
-    layer_add_child(window_layer, simple_menu_layer_get_layer(s_menu_layer));
-
+    // Just push it on the stack
     window_stack_push(s_menu_window, true);
 }
 
@@ -431,10 +430,6 @@ static void show_menu(void) {
 static void hide_menu(void) {
     if (!s_menu_window) return;
     window_stack_remove(s_menu_window, true);
-    simple_menu_layer_destroy(s_menu_layer);
-    window_destroy(s_menu_window);
-    s_menu_window = NULL;
-    s_menu_layer = NULL;
     layer_mark_dirty(s_canvas_layer);
 }
 
