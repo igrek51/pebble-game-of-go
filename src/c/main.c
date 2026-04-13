@@ -1564,10 +1564,10 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
         GTextAlignmentLeft,
         NULL);
 
-    // Right side: Score estimate
+    // Right side: Score estimate (always from Black's perspective)
     char right_text[32];
     if (ui_state != GAME_OVER) {
-        int diff_10x = estimate_score_10x();
+        int diff_10x = estimate_score_10x();  // Positive = Black winning
         int abs_diff_10x = diff_10x < 0 ? -diff_10x : diff_10x;
         int diff_int = abs_diff_10x / 10;
         int diff_frac = abs_diff_10x % 10;
@@ -1575,7 +1575,7 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
         if (diff_10x >= 0) {
             snprintf(right_text, sizeof(right_text), "B+%d.%d", diff_int, diff_frac);
         } else {
-            snprintf(right_text, sizeof(right_text), "W+%d.%d", diff_int, diff_frac);
+            snprintf(right_text, sizeof(right_text), "B-%d.%d", diff_int, diff_frac);
         }
 
         graphics_draw_text(ctx, right_text,
@@ -1738,7 +1738,8 @@ static void handle_click(ClickRecognizerRef recognizer, void *context) {
                 if (button == BUTTON_ID_DOWN && selected_row < MENU_ROW) selected_row++;
                 break;
             case BUTTON_ID_BACK:
-                // Back in VIEW does nothing (already at top level)
+                // Back in VIEW opens the menu
+                show_menu();
                 break;
             default:
                 break;
@@ -1780,7 +1781,7 @@ static void handle_click(ClickRecognizerRef recognizer, void *context) {
     } else if (ui_state == SELECTING_COL) {
         switch (button) {
             case BUTTON_ID_UP:
-                // Inverted: UP moves right (increase column)
+                // UP moves right (increase column)
                 if (selected_col < BOARD_SIZE - 1) {
                     selected_col++;
                 } else {
@@ -1788,7 +1789,7 @@ static void handle_click(ClickRecognizerRef recognizer, void *context) {
                 }
                 break;
             case BUTTON_ID_DOWN:
-                // Inverted: DOWN moves left (decrease column)
+                // DOWN moves left (decrease column)
                 if (selected_col > 0) {
                     selected_col--;
                 } else {
