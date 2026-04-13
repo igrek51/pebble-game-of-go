@@ -1,4 +1,12 @@
 # Game of Go 9x9 on Pebble
+
+![](gfx/go144icon.png)
+![](gfx/demo200x228.gif)
+![](gfx/200x228-screnshot.png)
+
+
+[Game of Go app](https://apps.repebble.com/35ad80179c4145118edca560)
+
 This app brings the game of Go / Baduk / Weiqi to the Pebble Time 2 with a fast,
 fully-featured engine and a polished interface.
 Go is the ultimate mental workout for your commute or coffee break.
@@ -21,3 +29,5 @@ How to Play:
 ---
 
 Love the game? Please leave a ❤️ on the Rebble App Store! Your support helps me keep improving the AI and adding new features like persistent saves and larger boards.
+
+![](gfx/banner-720x320.png)
