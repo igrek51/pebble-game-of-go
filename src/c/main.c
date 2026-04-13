@@ -19,7 +19,6 @@ typedef enum {
     VIEW,           // Just viewing board, no selection
     SELECTING_ROW,  // Selecting row (0-8 = board, 9 = menu)
     SELECTING_COL,  // Selecting column
-    MENU,           // Pass/New Game menu
     GAME_OVER       // Score display
 } UIState;
 
@@ -60,9 +59,6 @@ static int white_score = 0;
 // Ko message overlay
 static AppTimer *ko_timer = NULL;
 static bool show_ko_msg = false;
-
-// Menu cursor
-static int menu_cursor = 0;  // 0 = PASS, 1 = NEW GAME
 
 // Window & layer
 static Window *s_main_window;
@@ -113,7 +109,6 @@ static void init_board(void) {
     black_score = 0;
     white_score = 0;
     show_ko_msg = false;
-    menu_cursor = 0;
     if (ko_timer) {
         app_timer_cancel(ko_timer);
         ko_timer = NULL;
@@ -397,7 +392,7 @@ static void menu_select_callback(int index, void *context) {
     if (index == 0) {
         // PASS selected
         do_pass();
-    } else {
+    } else if (index == 1) {
         // NEW GAME selected
         init_board();
     }
@@ -703,6 +698,15 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
             NULL);
     }
 
+    // Draw "..." label for menu row
+    int menu_y = BOARD_ORIGIN_Y + MENU_ROW * CELL_SIZE;
+    graphics_draw_text(ctx, "...",
+        fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+        GRect(BOARD_ORIGIN_X + CELL_SIZE * 4 - 6, menu_y - 7, 12, 14),
+        GTextOverflowModeWordWrap,
+        GTextAlignmentCenter,
+        NULL);
+
     // Draw hoshi (handicap) points at 5 positions for 9x9: C3, C7, E5, G3, G7
     // In 0-indexed (row, col): (6,2), (2,2), (4,4), (6,6), (2,6)
     graphics_context_set_fill_color(ctx, COLOR_GRID);
@@ -745,20 +749,18 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
     }
 }
 
-// Long-press SELECT to open menu
+// Long-press UP/DOWN to open menu
 static void handle_long_click(ClickRecognizerRef recognizer, void *context) {
-    // Open menu on long-press SELECT from any state (except when already in dialogs)
-    if (ui_state != MENU && ui_state != GAME_OVER) {
-        show_menu();
-    }
+    show_menu();
 }
 
 // Button click handlers
 static void click_config_provider(Window *window) {
     window_single_click_subscribe(BUTTON_ID_UP, handle_click);
+    window_long_click_subscribe(BUTTON_ID_UP, 750, handle_long_click, NULL);
     window_single_click_subscribe(BUTTON_ID_DOWN, handle_click);
+    window_long_click_subscribe(BUTTON_ID_DOWN, 750, handle_long_click, NULL);
     window_single_click_subscribe(BUTTON_ID_SELECT, handle_click);
-    window_long_click_subscribe(BUTTON_ID_SELECT, 750, handle_long_click, NULL);
     window_single_click_subscribe(BUTTON_ID_BACK, handle_click);
 }
 
@@ -777,7 +779,7 @@ static void handle_click(ClickRecognizerRef recognizer, void *context) {
                 selected_col = 0;
                 // UP/DOWN also change the row if in VIEW
                 if (button == BUTTON_ID_UP && selected_row > 0) selected_row--;
-                if (button == BUTTON_ID_DOWN && selected_row < BOARD_SIZE - 1) selected_row++;
+                if (button == BUTTON_ID_DOWN && selected_row < MENU_ROW) selected_row++;
                 break;
             case BUTTON_ID_BACK:
                 // Back in VIEW does nothing (already at top level)
@@ -791,21 +793,26 @@ static void handle_click(ClickRecognizerRef recognizer, void *context) {
                 if (selected_row > 0) {
                     selected_row--;
                 } else {
-                    selected_row = BOARD_SIZE - 1;  // Cycle to last row
+                    selected_row = MENU_ROW;  // Cycle to menu row
                 }
                 break;
             case BUTTON_ID_DOWN:
-                if (selected_row < BOARD_SIZE - 1) {
+                if (selected_row < MENU_ROW) {
                     selected_row++;
                 } else {
                     selected_row = 0;  // Cycle to first row
                 }
                 break;
             case BUTTON_ID_SELECT:
-                // Move to column selection, recall the last column used
-                previous_state = SELECTING_ROW;
-                selected_col = last_col;
-                ui_state = SELECTING_COL;
+                if (selected_row == MENU_ROW) {
+                    // Open menu when selecting the "..." row
+                    show_menu();
+                } else {
+                    // Move to column selection, recall the last column used
+                    previous_state = SELECTING_ROW;
+                    selected_col = last_col;
+                    ui_state = SELECTING_COL;
+                }
                 break;
             case BUTTON_ID_BACK:
                 // Go back to view state
