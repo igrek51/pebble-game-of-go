@@ -10,23 +10,24 @@
 
 // Bigger board with breathing room from coordinates: 9 * 21 = 189px
 // Space for row labels on left + gap, space for column labels on top + gap
-#define BOARD_ORIGIN_X 14
-#define BOARD_ORIGIN_Y 33
+#define BOARD_ORIGIN_X 22  // Moved right to separate from row numbers
+#define BOARD_ORIGIN_Y 48  // Moved down to separate from column letters
 
 // UI States
 typedef enum {
-    SELECTING_ROW,
-    SELECTING_COL
+    VIEW,           // Just viewing board, no selection
+    SELECTING_ROW,  // Selecting row
+    SELECTING_COL   // Selecting column
 } UIState;
 
 // Colors
-#define COLOR_BOARD GColorWhite
+#define COLOR_BOARD GColorChromeYellow      // Golden tan (wooden board appearance)
 #define COLOR_GRID GColorBlack
 #define COLOR_BLACK_STONE GColorBlack
 #define COLOR_WHITE_STONE GColorWhite
-#define COLOR_CURSOR GColorRed
-#define COLOR_HIGHLIGHT GColorChromeYellow
-#define COLOR_BG GColorWhite
+#define COLOR_CURSOR_COL GColorLightGray    // Gray square for column selection
+#define COLOR_HIGHLIGHT GColorLightGray     // Gray row highlight
+#define COLOR_BG GColorChromeYellow         // Match board color
 #define COLOR_STATUS_BG GColorBlue
 #define COLOR_TEXT GColorWhite
 
@@ -39,7 +40,10 @@ static uint16_t white_captures = 0;
 // UI state
 static int selected_row = 0;
 static int selected_col = 0;
-static UIState ui_state = SELECTING_ROW;
+static int last_row = 0;  // Remember the last row used for a move
+static int last_col = 0;  // Remember the last column used for a move
+static UIState ui_state = VIEW;
+static UIState previous_state = VIEW;
 
 // Window & layer
 static Window *s_main_window;
@@ -57,7 +61,8 @@ static void init_board(void) {
     white_captures = 0;
     selected_row = 0;
     selected_col = 0;
-    ui_state = SELECTING_ROW;
+    ui_state = VIEW;
+    previous_state = VIEW;
 }
 
 // Get/set stone
@@ -90,13 +95,18 @@ static bool try_place_stone(int row, int col) {
     // Place stone
     set_stone(row, col, current_player);
 
+    // Remember the row and column for next move
+    last_row = row;
+    last_col = col;
+
     // Switch player
     current_player = (current_player == BLACK) ? WHITE : BLACK;
 
-    // Keep selected row, reset to row selection phase
-    // selected_row stays the same
+    // Reset to view state after placing
+    previous_state = VIEW;
+    ui_state = VIEW;
+    selected_row = 0;
     selected_col = 0;
-    ui_state = SELECTING_ROW;
 
     return true;
 }
@@ -130,12 +140,24 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
                                    BOARD_SIZE * CELL_SIZE + 2,
                                    BOARD_SIZE * CELL_SIZE + 2), 0, GCornerNone);
 
-    // Always highlight the selected row
-    int row_y = BOARD_ORIGIN_Y + selected_row * CELL_SIZE;
-    graphics_context_set_fill_color(ctx, COLOR_HIGHLIGHT);
-    graphics_fill_rect(ctx, GRect(BOARD_ORIGIN_X, row_y - CELL_SIZE/2,
-                                  BOARD_SIZE * CELL_SIZE, CELL_SIZE),
-                      0, GCornerNone);
+    // Highlight the selected row only during row selection
+    if (ui_state == SELECTING_ROW) {
+        int row_y = BOARD_ORIGIN_Y + selected_row * CELL_SIZE;
+        graphics_context_set_fill_color(ctx, COLOR_HIGHLIGHT);
+        // Extend highlight to the left by half a cell width
+        graphics_fill_rect(ctx, GRect(BOARD_ORIGIN_X - CELL_SIZE/2, row_y - CELL_SIZE/2,
+                                      BOARD_SIZE * CELL_SIZE + CELL_SIZE/2, CELL_SIZE),
+                          0, GCornerNone);
+    }
+
+    // Draw cursor (behind grid and stones) only during column selection
+    if (ui_state == SELECTING_COL) {
+        int cursor_x = BOARD_ORIGIN_X + selected_col * CELL_SIZE;
+        int cursor_y = BOARD_ORIGIN_Y + selected_row * CELL_SIZE;
+        graphics_context_set_fill_color(ctx, COLOR_CURSOR_COL);
+        graphics_fill_rect(ctx, GRect(cursor_x - CELL_SIZE/2, cursor_y - CELL_SIZE/2,
+                                      CELL_SIZE, CELL_SIZE), 0, GCornerNone);
+    }
 
     // Draw grid lines
     graphics_context_set_stroke_color(ctx, COLOR_GRID);
@@ -159,7 +181,7 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
         char label[2] = {col_labels[col], '\0'};
         graphics_draw_text(ctx, label,
             fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
-            GRect(x - 6, BOARD_ORIGIN_Y - 15, 12, 14),
+            GRect(x - 6, BOARD_ORIGIN_Y - 25, 12, 14),
             GTextOverflowModeWordWrap,
             GTextAlignmentCenter,
             NULL);
@@ -172,7 +194,7 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
         snprintf(label, sizeof(label), "%d", BOARD_SIZE - row);  // 9 to 1
         graphics_draw_text(ctx, label,
             fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
-            GRect(0, y - 7, 8, 14),
+            GRect(5, y - 7, 10, 14),
             GTextOverflowModeWordWrap,
             GTextAlignmentCenter,
             NULL);
@@ -218,15 +240,6 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
             }
         }
     }
-
-    // Draw cursor only during column selection
-    if (ui_state == SELECTING_COL) {
-        int cursor_x = BOARD_ORIGIN_X + selected_col * CELL_SIZE;
-        int cursor_y = BOARD_ORIGIN_Y + selected_row * CELL_SIZE;
-        graphics_context_set_stroke_color(ctx, COLOR_CURSOR);
-        graphics_context_set_stroke_width(ctx, 3);
-        graphics_draw_circle(ctx, GPoint(cursor_x, cursor_y), STONE_RADIUS + 4);
-    }
 }
 
 // Button click handlers
@@ -240,22 +253,51 @@ static void click_config_provider(Window *window) {
 static void handle_click(ClickRecognizerRef recognizer, void *context) {
     ButtonId button = click_recognizer_get_button_id(recognizer);
 
-    if (ui_state == SELECTING_ROW) {
+    if (ui_state == VIEW) {
+        // In view state, SELECT/UP/DOWN moves to row selection
+        switch (button) {
+            case BUTTON_ID_SELECT:
+            case BUTTON_ID_UP:
+            case BUTTON_ID_DOWN:
+                previous_state = VIEW;
+                ui_state = SELECTING_ROW;
+                selected_row = last_row;  // Recall the last row used
+                selected_col = 0;
+                // UP/DOWN also change the row if in VIEW
+                if (button == BUTTON_ID_UP && selected_row > 0) selected_row--;
+                if (button == BUTTON_ID_DOWN && selected_row < BOARD_SIZE - 1) selected_row++;
+                break;
+            case BUTTON_ID_BACK:
+                // Back in VIEW does nothing (already at top level)
+                break;
+            default:
+                break;
+        }
+    } else if (ui_state == SELECTING_ROW) {
         switch (button) {
             case BUTTON_ID_UP:
-                if (selected_row > 0) selected_row--;
+                if (selected_row > 0) {
+                    selected_row--;
+                } else {
+                    selected_row = BOARD_SIZE - 1;  // Cycle to last row
+                }
                 break;
             case BUTTON_ID_DOWN:
-                if (selected_row < BOARD_SIZE - 1) selected_row++;
+                if (selected_row < BOARD_SIZE - 1) {
+                    selected_row++;
+                } else {
+                    selected_row = 0;  // Cycle to first row
+                }
                 break;
             case BUTTON_ID_SELECT:
-                // Move to column selection, start at middle column
-                selected_col = BOARD_SIZE / 2;
+                // Move to column selection, recall the last column used
+                previous_state = SELECTING_ROW;
+                selected_col = last_col;
                 ui_state = SELECTING_COL;
                 break;
             case BUTTON_ID_BACK:
-                // Go back to start (reset row)
-                selected_row = 0;
+                // Go back to view state
+                ui_state = VIEW;
                 break;
             default:
                 break;
@@ -263,10 +305,18 @@ static void handle_click(ClickRecognizerRef recognizer, void *context) {
     } else { // SELECTING_COL
         switch (button) {
             case BUTTON_ID_UP:
-                if (selected_col > 0) selected_col--;
+                if (selected_col > 0) {
+                    selected_col--;
+                } else {
+                    selected_col = BOARD_SIZE - 1;  // Cycle to last column
+                }
                 break;
             case BUTTON_ID_DOWN:
-                if (selected_col < BOARD_SIZE - 1) selected_col++;
+                if (selected_col < BOARD_SIZE - 1) {
+                    selected_col++;
+                } else {
+                    selected_col = 0;  // Cycle to first column
+                }
                 break;
             case BUTTON_ID_SELECT:
                 // Try to place stone

@@ -1,4 +1,4 @@
-.PHONY: help build clean install screenshot logs start-emulator stop-emulator setup scale-2x
+.PHONY: help build clean install screenshot logs start-emulator stop-emulator setup 2x
 
 help:
 	@echo "Game of Go - Pebble Time 2 (Emery)"
@@ -6,7 +6,7 @@ help:
 	@echo "Available commands:"
 	@echo "  make setup             - Set up Pebble SDK (run once)"
 	@echo "  make start-emulator    - Start QEMU emulator in background"
-	@echo "  make scale-2x          - Make emulator with 2x scaling"
+	@echo "  make 2x                - Make emulator with 2x scaling"
 	@echo "  make stop-emulator     - Stop emulator"
 	@echo "  make build             - Build the app (PBW)"
 	@echo "  make install           - Build and install on emulator"
@@ -23,7 +23,8 @@ emu: start-emulator
 start-emulator:
 	@bash scripts/emulator-control.sh start
 
-scale-2x:
+# Scale emulator window to 2x
+2x:
 	@WINDOW_ID=$$(xdotool search --name QEMU | tail -1); \
 	xdotool windowsize "$$WINDOW_ID" 400 456;
 
