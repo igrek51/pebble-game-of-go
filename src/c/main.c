@@ -306,6 +306,62 @@ static bool try_place_stone(int row, int col) {
     return true;
 }
 
+/// Calculate live score estimate using proximity heuristics
+// Returns difference * 10 (positive = Black ahead, negative = White ahead)
+// Avoids floating point: returns 75 instead of 7.5
+static int estimate_score_10x(void) {
+    int black_stones = 0, white_stones = 0;
+    int black_territory = 0, white_territory = 0;
+
+    // Count stones
+    for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
+        if (board[i] == BLACK) black_stones++;
+        else if (board[i] == WHITE) white_stones++;
+    }
+
+    // For each empty cell, determine ownership by proximity
+    for (int row = 0; row < BOARD_SIZE; row++) {
+        for (int col = 0; col < BOARD_SIZE; col++) {
+            int idx = board_index(row, col);
+            if (board[idx] != EMPTY) continue;
+
+            // Find nearest black and white stones using Manhattan distance
+            int min_black_dist = 999;
+            int min_white_dist = 999;
+
+            for (int r = 0; r < BOARD_SIZE; r++) {
+                for (int c = 0; c < BOARD_SIZE; c++) {
+                    int stone_idx = board_index(r, c);
+                    int dist = abs(row - r) + abs(col - c);
+
+                    if (board[stone_idx] == BLACK && dist < min_black_dist) {
+                        min_black_dist = dist;
+                    }
+                    if (board[stone_idx] == WHITE && dist < min_white_dist) {
+                        min_white_dist = dist;
+                    }
+                }
+            }
+
+            // Assign territory based on nearest stone
+            if (min_black_dist < min_white_dist) {
+                black_territory++;
+            } else if (min_white_dist < min_black_dist) {
+                white_territory++;
+            }
+            // If equidistant, neutral (not counted)
+        }
+    }
+
+    // All calculations in 10x scale to avoid floating point
+    // Black score = (black_stones + black_territory) * 10
+    // White score = (white_stones + white_territory) * 10 + 75 (komi 7.5 * 10)
+    int black_score_10x = (black_stones + black_territory) * 10;
+    int white_score_10x = (white_stones + white_territory) * 10 + 75;
+
+    return black_score_10x - white_score_10x;
+}
+
 // Compute Chinese scoring: stones + territory, with komi 7.5 for White
 static void compute_chinese_score(void) {
     static bool visited[BOARD_SIZE * BOARD_SIZE];
@@ -395,6 +451,11 @@ static void menu_select_callback(int index, void *context) {
     } else if (index == 1) {
         // NEW GAME selected
         init_board();
+    } else if (index == 2) {
+        // EXIT selected
+        hide_menu();
+        window_stack_pop_all(true);
+        return;
     }
     hide_menu();
 }
@@ -408,13 +469,15 @@ static void show_menu(void) {
         GRect bounds = layer_get_bounds(window_layer);
 
         // Set up menu items
-        static SimpleMenuItem items[2];
+        static SimpleMenuItem items[3];
         items[0].title = "PASS";
         items[0].callback = menu_select_callback;
         items[1].title = "NEW GAME";
         items[1].callback = menu_select_callback;
+        items[2].title = "EXIT";
+        items[2].callback = menu_select_callback;
 
-        menu_sections[0].num_items = 2;
+        menu_sections[0].num_items = 3;
         menu_sections[0].items = items;
 
         // Create menu layer
@@ -490,14 +553,24 @@ static void gameover_window_load(Window *window) {
     Layer *window_layer = window_get_root_layer(window);
     GRect bounds = layer_get_bounds(window_layer);
 
+    // Calculate scores with komi (using 10x scale for precision)
+    int black_total_10x = black_score * 10;
+    int white_total_10x = white_score * 10 + 75;  // Add komi 7.5 * 10
+
     // Determine winner
-    bool black_wins = (2 * black_score) > (2 * white_score + 15);
+    bool black_wins = black_total_10x > white_total_10x;
     const char *winner = black_wins ? "Black wins!" : "White wins!";
+
+    // Format scores: extract integer and fractional parts
+    int b_int = black_total_10x / 10;
+    int b_frac = black_total_10x % 10;
+    int w_int = white_total_10x / 10;
+    int w_frac = white_total_10x % 10;
 
     // Create and format message
     static char message[128];
-    snprintf(message, sizeof(message), "%s\n\nB: %d  W: %d.5",
-             winner, black_score, white_score);
+    snprintf(message, sizeof(message), "%s\n\nB: %d.%d  W: %d.%d",
+             winner, b_int, b_frac, w_int, w_frac);
 
     // Create text layer for message
     TextLayer *text_layer = text_layer_create(bounds);
@@ -605,25 +678,62 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
     graphics_context_set_fill_color(ctx, COLOR_BG);
     graphics_fill_rect(ctx, layer_get_bounds(layer), 0, GCornerNone);
 
-    // Draw status bar
-    graphics_context_set_fill_color(ctx, COLOR_STATUS_BG);
+    // Draw status bar with dynamic colors based on whose turn it is
+    GColor status_bg_color, status_text_color;
+
+    if (ui_state == GAME_OVER) {
+        status_bg_color = GColorBlue;
+        status_text_color = GColorWhite;
+    } else if (current_player == BLACK) {
+        status_bg_color = GColorBlack;
+        status_text_color = GColorWhite;
+    } else {
+        status_bg_color = GColorWhite;
+        status_text_color = GColorBlack;
+    }
+
+    graphics_context_set_fill_color(ctx, status_bg_color);
     graphics_fill_rect(ctx, GRect(0, 0, 200, 20), 0, GCornerNone);
 
-    graphics_context_set_text_color(ctx, COLOR_TEXT);
-    char status_text[32];
+    graphics_context_set_text_color(ctx, status_text_color);
+
+    // Left side: "X to move"
+    char left_text[32];
     if (ui_state == GAME_OVER) {
-        snprintf(status_text, sizeof(status_text), "GAME OVER");
+        snprintf(left_text, sizeof(left_text), "GAME OVER");
     } else {
-        snprintf(status_text, sizeof(status_text), "%s",
+        snprintf(left_text, sizeof(left_text), "%s to move",
             current_player == BLACK ? "Black" : "White");
     }
 
-    graphics_draw_text(ctx, status_text,
+    graphics_draw_text(ctx, left_text,
         fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
-        GRect(5, 2, 190, 20),
+        GRect(5, 2, 120, 20),
         GTextOverflowModeWordWrap,
         GTextAlignmentLeft,
         NULL);
+
+    // Right side: Score estimate
+    char right_text[32];
+    if (ui_state != GAME_OVER) {
+        int diff_10x = estimate_score_10x();
+        int abs_diff_10x = diff_10x < 0 ? -diff_10x : diff_10x;
+        int diff_int = abs_diff_10x / 10;
+        int diff_frac = abs_diff_10x % 10;
+
+        if (diff_10x >= 0) {
+            snprintf(right_text, sizeof(right_text), "B+%d.%d", diff_int, diff_frac);
+        } else {
+            snprintf(right_text, sizeof(right_text), "W+%d.%d", diff_int, diff_frac);
+        }
+
+        graphics_draw_text(ctx, right_text,
+            fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+            GRect(120, 2, 75, 20),
+            GTextOverflowModeWordWrap,
+            GTextAlignmentRight,
+            NULL);
+    }
 
     // Draw board background (extends to bottom of screen to cover menu row area)
     graphics_context_set_stroke_color(ctx, COLOR_GRID);
