@@ -33,6 +33,16 @@ typedef enum {
 #define COLOR_STATUS_BG GColorBlue
 #define COLOR_TEXT GColorWhite
 
+// Game mode
+typedef enum {
+    MODE_PVP,      // Player vs Player
+    MODE_BLACK_AI, // Black is AI
+    MODE_WHITE_AI  // White is AI
+} GameMode;
+
+static GameMode game_mode = MODE_WHITE_AI;  // Default: Black (human) vs AI (White)
+static AppTimer *ai_move_timer = NULL;
+
 // Game state
 static uint8_t board[BOARD_SIZE * BOARD_SIZE];
 static uint8_t current_player = BLACK;
@@ -69,6 +79,11 @@ static Window *s_menu_window = NULL;
 static SimpleMenuLayer *s_menu_layer = NULL;
 static SimpleMenuSection menu_sections[1];
 
+// Mode selection menu
+static Window *s_mode_window = NULL;
+static SimpleMenuLayer *s_mode_layer = NULL;
+static SimpleMenuSection mode_sections[1];
+
 // Dialog windows
 static Window *s_dialog_window = NULL;
 static Window *s_gameover_dialog = NULL;
@@ -86,6 +101,11 @@ static void remove_group(int start_row, int start_col, uint8_t color);
 static void show_menu(void);
 static void hide_menu(void);
 static void menu_select_callback(int index, void *context);
+static void show_mode_select(void);
+static void hide_mode_select(void);
+static void mode_select_callback(int index, void *context);
+static void try_make_ai_move(void);
+static void ai_move_callback(void *data);
 static void show_dialog(const char *message);
 static void hide_dialog(void);
 static void show_gameover_dialog(void);
@@ -100,8 +120,8 @@ static void init_board(void) {
     current_player = BLACK;
     selected_row = 0;
     selected_col = 0;
-    last_row = 0;
-    last_col = 0;
+    last_row = 4;  // Center of board for AI to consider
+    last_col = 4;
     ui_state = VIEW;
     previous_state = VIEW;
     ko_active = false;
@@ -112,6 +132,15 @@ static void init_board(void) {
     if (ko_timer) {
         app_timer_cancel(ko_timer);
         ko_timer = NULL;
+    }
+    if (ai_move_timer) {
+        app_timer_cancel(ai_move_timer);
+        ai_move_timer = NULL;
+    }
+
+    // Start AI move if Black is AI and goes first
+    if (game_mode == MODE_BLACK_AI) {
+        ai_move_timer = app_timer_register(500, ai_move_callback, NULL);
     }
 }
 
@@ -303,6 +332,14 @@ static bool try_place_stone(int row, int col) {
     selected_row = 0;
     selected_col = 0;
 
+    // Schedule AI move if it's AI's turn
+    bool next_is_ai = (game_mode == MODE_BLACK_AI && current_player == BLACK) ||
+                      (game_mode == MODE_WHITE_AI && current_player == WHITE);
+    if (next_is_ai) {
+        if (ai_move_timer) app_timer_cancel(ai_move_timer);
+        ai_move_timer = app_timer_register(500, ai_move_callback, NULL);
+    }
+
     return true;
 }
 
@@ -311,7 +348,7 @@ static bool try_place_stone(int row, int col) {
 // Avoids floating point: returns 75 instead of 7.5
 static int estimate_score_10x(void) {
     int black_stones = 0, white_stones = 0;
-    int black_territory = 0, white_territory = 0;
+    int black_territory_10x = 0, white_territory_10x = 0;
 
     // Count stones
     for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
@@ -319,7 +356,7 @@ static int estimate_score_10x(void) {
         else if (board[i] == WHITE) white_stones++;
     }
 
-    // For each empty cell, determine ownership by proximity
+    // For each empty cell, determine weighted ownership by proximity
     for (int row = 0; row < BOARD_SIZE; row++) {
         for (int col = 0; col < BOARD_SIZE; col++) {
             int idx = board_index(row, col);
@@ -343,23 +380,106 @@ static int estimate_score_10x(void) {
                 }
             }
 
-            // Assign territory based on nearest stone
+            // Calculate weighted territory value based on distance
+            // Linear scale: distance 1 = 1.0, distance 9 = 0.2
+            // value = 1.0 - (dist - 1) * 0.1, clamped to [0.2, 1.0]
+            int black_value = (min_black_dist <= 0) ? 10 : (10 - (min_black_dist - 1));
+            int white_value = (min_white_dist <= 0) ? 10 : (10 - (min_white_dist - 1));
+
+            if (black_value < 2) black_value = 2;  // Minimum 0.2
+            if (white_value < 2) white_value = 2;
+
+            // Assign territory based on nearest stone (weighted by distance)
             if (min_black_dist < min_white_dist) {
-                black_territory++;
+                black_territory_10x += black_value;
             } else if (min_white_dist < min_black_dist) {
-                white_territory++;
+                white_territory_10x += white_value;
             }
             // If equidistant, neutral (not counted)
         }
     }
 
-    // All calculations in 10x scale to avoid floating point
-    // Black score = (black_stones + black_territory) * 10
-    // White score = (white_stones + white_territory) * 10 + 75 (komi 7.5 * 10)
-    int black_score_10x = (black_stones + black_territory) * 10;
-    int white_score_10x = (white_stones + white_territory) * 10 + 75;
+    // All calculations in 10x scale
+    // Stones count as 10 (1.0), territory is already in 10x scale
+    int black_score_10x = (black_stones * 10) + black_territory_10x;
+    int white_score_10x = (white_stones * 10) + white_territory_10x + 75;
 
     return black_score_10x - white_score_10x;
+}
+
+// Simple AI: suggest the best move based on score estimation
+static void suggest_hint(void) {
+    if (ui_state == GAME_OVER) return;
+
+    // Generate candidate moves around the last move
+    int candidates[8][2] = {
+        {last_row - 1, last_col}, {last_row + 1, last_col},  // up, down
+        {last_row, last_col - 1}, {last_row, last_col + 1},  // left, right
+        {last_row - 1, last_col - 1}, {last_row - 1, last_col + 1},  // diagonals
+        {last_row + 1, last_col - 1}, {last_row + 1, last_col + 1}
+    };
+
+    int best_row = -1, best_col = -1;
+    int best_score = -999999;  // We want highest score for current player
+
+    // Evaluate each candidate move
+    for (int i = 0; i < 8; i++) {
+        int row = candidates[i][0];
+        int col = candidates[i][1];
+        int idx = board_index(row, col);
+
+        // Skip invalid positions or occupied cells
+        if (idx < 0 || board[idx] != EMPTY) continue;
+
+        // Temporarily place the stone and evaluate
+        uint8_t opponent = (current_player == BLACK) ? WHITE : BLACK;
+        uint8_t temp_board[BOARD_SIZE * BOARD_SIZE];
+        memcpy(temp_board, board, sizeof(board));
+
+        // Place stone
+        board[idx] = current_player;
+
+        // Check for captures
+        const int dr[] = {-1, 1, 0, 0};
+        const int dc[] = {0, 0, -1, 1};
+        for (int d = 0; d < 4; d++) {
+            int nr = row + dr[d];
+            int nc = col + dc[d];
+            int nidx = board_index(nr, nc);
+            if (nidx < 0) continue;
+            if (board[nidx] == opponent && count_liberties(nr, nc, opponent) == 0) {
+                remove_group(nr, nc, opponent);
+            }
+        }
+
+        // Evaluate if move is legal (not suicide)
+        bool is_legal = count_liberties(row, col, current_player) > 0;
+
+        if (is_legal) {
+            // Get score for this move
+            int score_10x = estimate_score_10x();
+            if (current_player == WHITE) {
+                score_10x = -score_10x;  // White wants negative (wins by positive margin)
+            }
+
+            if (score_10x > best_score) {
+                best_score = score_10x;
+                best_row = row;
+                best_col = col;
+            }
+        }
+
+        // Restore board
+        memcpy(board, temp_board, sizeof(board));
+    }
+
+    // Set selection to best move found
+    if (best_row >= 0 && best_col >= 0) {
+        selected_row = best_row;
+        selected_col = best_col;
+        ui_state = SELECTING_COL;  // Highlight the suggested cell
+        layer_mark_dirty(s_canvas_layer);
+    }
 }
 
 // Compute Chinese scoring: stones + territory, with komi 7.5 for White
@@ -443,15 +563,39 @@ static void compute_chinese_score(void) {
     // Komi 7.5 handled in display (white score displayed with .5, compared as 2*white+15)
 }
 
+// Forward declare hint function
+static void suggest_hint(void);
+
+// Mode selection callback
+static void mode_select_callback(int index, void *context) {
+    if (index == 0) {
+        game_mode = MODE_PVP;
+    } else if (index == 1) {
+        game_mode = MODE_WHITE_AI;  // Black vs AI = human Black vs AI White
+    } else if (index == 2) {
+        game_mode = MODE_BLACK_AI;  // White vs AI = human White vs AI Black
+    }
+    init_board();
+    hide_mode_select();
+    layer_mark_dirty(s_canvas_layer);
+}
+
 // Menu callbacks
 static void menu_select_callback(int index, void *context) {
     if (index == 0) {
         // PASS selected
         do_pass();
     } else if (index == 1) {
-        // NEW GAME selected
-        init_board();
+        // NEW GAME selected - show mode selection
+        hide_menu();
+        show_mode_select();
+        return;
     } else if (index == 2) {
+        // HINT selected - suggest a move
+        suggest_hint();
+        hide_menu();
+        return;
+    } else if (index == 3) {
         // EXIT selected
         hide_menu();
         window_stack_pop_all(true);
@@ -469,15 +613,17 @@ static void show_menu(void) {
         GRect bounds = layer_get_bounds(window_layer);
 
         // Set up menu items
-        static SimpleMenuItem items[3];
+        static SimpleMenuItem items[4];
         items[0].title = "PASS";
         items[0].callback = menu_select_callback;
         items[1].title = "NEW GAME";
         items[1].callback = menu_select_callback;
-        items[2].title = "EXIT";
+        items[2].title = "HINT";
         items[2].callback = menu_select_callback;
+        items[3].title = "EXIT";
+        items[3].callback = menu_select_callback;
 
-        menu_sections[0].num_items = 3;
+        menu_sections[0].num_items = 4;
         menu_sections[0].items = items;
 
         // Create menu layer
@@ -493,6 +639,177 @@ static void show_menu(void) {
 static void hide_menu(void) {
     if (!s_menu_window) return;
     window_stack_remove(s_menu_window, true);
+    layer_mark_dirty(s_canvas_layer);
+}
+
+// Show mode selection window
+static void show_mode_select(void) {
+    // Create mode window only once
+    if (!s_mode_window) {
+        s_mode_window = window_create();
+
+        Layer *window_layer = window_get_root_layer(s_mode_window);
+        GRect bounds = layer_get_bounds(window_layer);
+
+        // Set up mode selection items
+        static SimpleMenuItem mode_items[3];
+        mode_items[0].title = "Player vs Player";
+        mode_items[0].callback = mode_select_callback;
+        mode_items[1].title = "Black vs AI";
+        mode_items[1].callback = mode_select_callback;
+        mode_items[2].title = "White vs AI";
+        mode_items[2].callback = mode_select_callback;
+
+        mode_sections[0].num_items = 3;
+        mode_sections[0].items = mode_items;
+
+        // Create mode menu layer
+        s_mode_layer = simple_menu_layer_create(bounds, s_mode_window, mode_sections, 1, NULL);
+        layer_add_child(window_layer, simple_menu_layer_get_layer(s_mode_layer));
+    }
+
+    // Just push it on the stack
+    window_stack_push(s_mode_window, true);
+}
+
+// Hide mode selection window
+static void hide_mode_select(void) {
+    if (!s_mode_window) return;
+    window_stack_remove(s_mode_window, true);
+    layer_mark_dirty(s_canvas_layer);
+}
+
+// AI move timer callback - make the AI move
+static void ai_move_callback(void *data) {
+    ai_move_timer = NULL;
+    try_make_ai_move();
+}
+
+// Evaluate a board position for AI (1 = our perspective, -1 = opponent's)
+static int evaluate_position(int perspective) {
+    int score = estimate_score_10x();
+    if (perspective == -1) score = -score;
+    return score;
+}
+
+// Try to make an AI move with 2-ply depth search
+static void try_make_ai_move(void) {
+    if (ui_state != VIEW) return;
+
+    bool is_black_ai = (game_mode == MODE_BLACK_AI && current_player == BLACK);
+    bool is_white_ai = (game_mode == MODE_WHITE_AI && current_player == WHITE);
+
+    if (!is_black_ai && !is_white_ai) return;
+
+    uint8_t opponent = (current_player == BLACK) ? WHITE : BLACK;
+    int best_row = -1, best_col = -1;
+    int best_score = -999999;
+
+    // Generate candidate moves around last move
+    int candidates[8][2] = {
+        {last_row - 1, last_col}, {last_row + 1, last_col},
+        {last_row, last_col - 1}, {last_row, last_col + 1},
+        {last_row - 1, last_col - 1}, {last_row - 1, last_col + 1},
+        {last_row + 1, last_col - 1}, {last_row + 1, last_col + 1}
+    };
+
+    // First pass: evaluate each AI move with opponent response (2-ply)
+    for (int i = 0; i < 8; i++) {
+        int row = candidates[i][0];
+        int col = candidates[i][1];
+        int idx = board_index(row, col);
+
+        if (idx < 0 || board[idx] != EMPTY) continue;
+
+        // Save board state
+        uint8_t temp_board[BOARD_SIZE * BOARD_SIZE];
+        memcpy(temp_board, board, sizeof(board));
+
+        // Make AI move
+        board[idx] = current_player;
+        const int dr[] = {-1, 1, 0, 0};
+        const int dc[] = {0, 0, -1, 1};
+
+        for (int d = 0; d < 4; d++) {
+            int nr = row + dr[d];
+            int nc = col + dc[d];
+            int nidx = board_index(nr, nc);
+            if (nidx < 0) continue;
+            if (board[nidx] == opponent && count_liberties(nr, nc, opponent) == 0) {
+                remove_group(nr, nc, opponent);
+            }
+        }
+
+        if (count_liberties(row, col, current_player) == 0) {
+            memcpy(board, temp_board, sizeof(board));
+            continue;  // Illegal move
+        }
+
+        // Evaluate opponent's best response in 3x3 vicinity
+        int worst_opponent_score = 999999;
+
+        for (int oi = 0; oi < 8; oi++) {
+            int orow = row + (oi % 3) - 1;
+            int ocol = col + (oi / 3) - 1;
+            int oidx = board_index(orow, ocol);
+
+            if (oidx < 0 || board[oidx] != EMPTY) continue;
+
+            uint8_t temp_board2[BOARD_SIZE * BOARD_SIZE];
+            memcpy(temp_board2, board, sizeof(board));
+
+            // Make opponent move
+            board[oidx] = opponent;
+
+            for (int d = 0; d < 4; d++) {
+                int nr = orow + dr[d];
+                int nc = ocol + dc[d];
+                int nidx = board_index(nr, nc);
+                if (nidx < 0) continue;
+                if (board[nidx] == current_player && count_liberties(nr, nc, current_player) == 0) {
+                    remove_group(nr, nc, current_player);
+                }
+            }
+
+            if (count_liberties(orow, ocol, opponent) > 0) {
+                // Opponent's move is legal - evaluate from opponent perspective
+                int opp_score = evaluate_position(-1);
+                if (opp_score < worst_opponent_score) {
+                    worst_opponent_score = opp_score;
+                }
+            }
+
+            memcpy(board, temp_board2, sizeof(board));
+        }
+
+        // Use worst opponent response (min-max)
+        int ai_score = (worst_opponent_score == 999999) ? evaluate_position(1) : worst_opponent_score;
+
+        if (ai_score > best_score) {
+            best_score = ai_score;
+            best_row = row;
+            best_col = col;
+        }
+
+        memcpy(board, temp_board, sizeof(board));
+    }
+
+    // Make the best move (or pass if no good move found)
+    if (best_row >= 0 && best_col >= 0) {
+        try_place_stone(best_row, best_col);
+    } else {
+        do_pass();
+    }
+
+    // Schedule next AI move if needed
+    if (ui_state == VIEW) {
+        bool next_is_ai = (game_mode == MODE_BLACK_AI && current_player == BLACK) ||
+                          (game_mode == MODE_WHITE_AI && current_player == WHITE);
+        if (next_is_ai) {
+            ai_move_timer = app_timer_register(1000, ai_move_callback, NULL);
+        }
+    }
+
     layer_mark_dirty(s_canvas_layer);
 }
 
@@ -929,17 +1246,19 @@ static void handle_click(ClickRecognizerRef recognizer, void *context) {
     } else if (ui_state == SELECTING_COL) {
         switch (button) {
             case BUTTON_ID_UP:
-                if (selected_col > 0) {
-                    selected_col--;
-                } else {
-                    selected_col = BOARD_SIZE - 1;  // Cycle to last column
-                }
-                break;
-            case BUTTON_ID_DOWN:
+                // Inverted: UP moves right (increase column)
                 if (selected_col < BOARD_SIZE - 1) {
                     selected_col++;
                 } else {
                     selected_col = 0;  // Cycle to first column
+                }
+                break;
+            case BUTTON_ID_DOWN:
+                // Inverted: DOWN moves left (decrease column)
+                if (selected_col > 0) {
+                    selected_col--;
+                } else {
+                    selected_col = BOARD_SIZE - 1;  // Cycle to last column
                 }
                 break;
             case BUTTON_ID_SELECT:
