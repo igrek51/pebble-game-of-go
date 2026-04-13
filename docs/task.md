@@ -9,3 +9,4 @@
 - ✓ Add message / dialog UI mechanic - Ko message dialog, game over dialog, error dialog for occupied cells
 
 ## Future Improvements
+- Replace the basic AI algorithm with the new one Monte Carlo Search Tree described in ai_strategy.md
