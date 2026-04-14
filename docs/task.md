@@ -12,3 +12,4 @@
 - Make sure the current implementation of AI algorithm is on par with the Monte Carlo Search Tree described in ai_strategy.md
 - Split the code in src/c/main.c into multiple files, logically separate.
 - Add unit tests for some important, critical parts, like AI strategy.
+- Establish a reliable way for testing the app stability, correctness, compilation errors, without running it actually on emulator, but just compiling it and running tests. Of course, emulator and screenshots is final test.
