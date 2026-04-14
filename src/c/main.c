@@ -324,6 +324,17 @@ static void do_pass(void) {
     // Switch player and return to view
     current_player = (current_player == BLACK) ? WHITE : BLACK;
     ui_state = VIEW;
+
+    // If AI should move next, schedule the callback
+    bool next_is_ai = (game_mode == MODE_BLACK_AI && current_player == BLACK) ||
+                      (game_mode == MODE_WHITE_AI && current_player == WHITE) ||
+                      (game_mode == MODE_AI_AI);
+    if (next_is_ai) {
+        if (ai_move_timer) {
+            app_timer_cancel(ai_move_timer);
+        }
+        ai_move_timer = app_timer_register(500, ai_move_callback, NULL);
+    }
 }
 
 // Try to place a stone with capture detection, suicide check, and Ko rule
@@ -1772,19 +1783,19 @@ static void handle_click(ClickRecognizerRef recognizer, void *context) {
     } else if (ui_state == SELECTING_COL) {
         switch (button) {
             case BUTTON_ID_UP:
-                // UP moves right (increase column)
-                if (selected_col < BOARD_SIZE - 1) {
-                    selected_col++;
-                } else {
-                    selected_col = 0;  // Cycle to first column
-                }
-                break;
-            case BUTTON_ID_DOWN:
-                // DOWN moves left (decrease column)
+                // UP moves left (decrease column)
                 if (selected_col > 0) {
                     selected_col--;
                 } else {
                     selected_col = BOARD_SIZE - 1;  // Cycle to last column
+                }
+                break;
+            case BUTTON_ID_DOWN:
+                // DOWN moves right (increase column)
+                if (selected_col < BOARD_SIZE - 1) {
+                    selected_col++;
+                } else {
+                    selected_col = 0;  // Cycle to first column
                 }
                 break;
             case BUTTON_ID_SELECT:
