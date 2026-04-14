@@ -88,6 +88,9 @@ static SimpleMenuSection mode_sections[1];
 
 // Dialog windows
 static Window *s_dialog_window = NULL;
+static const char *s_dialog_message = NULL;
+static bool s_dialog_is_error = false;  // Track if dialog is error (red) or normal
+static Window *s_scroll_dialog_window = NULL;  // For scrollable dialogs
 static Window *s_gameover_dialog = NULL;
 static Window *s_error_dialog = NULL;
 static AppTimer *s_error_timer = NULL;
@@ -156,7 +159,10 @@ static void mode_select_callback(int index, void *context);
 static void try_make_ai_move(void);
 static void ai_move_callback(void *data);
 static void show_dialog(const char *message);
+static void show_ko_dialog(const char *message);
+static void show_scroll_dialog(const char *message);
 static void hide_dialog(void);
+static void hide_scroll_dialog(void);
 static void show_gameover_dialog(void);
 static void hide_gameover_dialog(void);
 static void show_error_dialog(const char *message);
@@ -376,6 +382,7 @@ static bool try_place_stone(int row, int col) {
     if (count_liberties(row, col, current_player) == 0) {
         // Restore board (suicide is illegal)
         memcpy(board, temp_board, sizeof(board));
+        show_error_dialog("Suicide! Illegal move");
         return false;
     }
 
@@ -383,7 +390,7 @@ static bool try_place_stone(int row, int col) {
     if (ko_active && memcmp(board, ko_board, sizeof(board)) == 0) {
         // Ko violation — restore and show dialog
         memcpy(board, temp_board, sizeof(board));
-        show_dialog("Ko! Illegal move");
+        show_ko_dialog("Ko rule (board state can't repeat)! Illegal move");
         return false;
     }
 
@@ -972,6 +979,24 @@ static void menu_select_callback(int index, void *context) {
         hide_menu();
         return;
     } else if (index == 3) {
+        // RULES selected - show scrollable rules dialog
+        hide_menu();
+        show_scroll_dialog(
+            "Rules of Go:\n"
+            "Go is a two-player, turn-based board game played on a grid, where the goal is to control more territory than the opponent.\n"
+            "Black moves first, alternating turns by placing one stone on an intersection.\n"
+            "Stones are captured by surrounding them, and the game ends with 2 consecutive passed turns, scoring by occupied area.\n\n"
+            "• Players take turns placing a single stone on an empty intersection. Stones cannot be moved.\n"
+            "• Capture (Liberties): A stone or group must have adjacent (not diagonally) empty points (liberties) to remain on the board.\n"
+            "If all liberties are blocked by opponent stones, the group is removed.\n"
+            "• Illegal Suicide Move: You cannot place a stone where it has no liberties unless it captures an opponent's stone(s).\n"
+            "• The Ko rule prohibits immediately re-capturing a single stone if it repeats a previous board position.\n"
+            "• Ending the Game: The game ends when both players pass consecutively. Passing is allowed at any time.\n"
+            "• Scoring (Goal): The winner is the player with the most occupied area: territory (empty points surrounded) plus stones on board.\n"
+            "• Compensation: White receives extra 7.5 points (komi) to compensate for going second.\n"
+        );
+        return;
+    } else if (index == 4) {
         // EXIT selected
         hide_menu();
         window_stack_pop_all(true);
@@ -989,17 +1014,19 @@ static void show_menu(void) {
         GRect bounds = layer_get_bounds(window_layer);
 
         // Set up menu items
-        static SimpleMenuItem items[4];
+        static SimpleMenuItem items[5];
         items[0].title = "PASS";
         items[0].callback = menu_select_callback;
         items[1].title = "NEW GAME";
         items[1].callback = menu_select_callback;
         items[2].title = "HINT";
         items[2].callback = menu_select_callback;
-        items[3].title = "EXIT";
+        items[3].title = "RULES";
         items[3].callback = menu_select_callback;
+        items[4].title = "EXIT";
+        items[4].callback = menu_select_callback;
 
-        menu_sections[0].num_items = 4;
+        menu_sections[0].num_items = 5;
         menu_sections[0].items = items;
 
         // Create menu layer
@@ -1367,11 +1394,18 @@ static void dialog_window_load(Window *window) {
 
     // Create text layer for message
     TextLayer *text_layer = text_layer_create(bounds);
-    text_layer_set_text(text_layer, "Ko! Illegal move");
+    text_layer_set_text(text_layer, s_dialog_message ? s_dialog_message : "Dialog");
     text_layer_set_text_alignment(text_layer, GTextAlignmentCenter);
     text_layer_set_font(text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD));
-    text_layer_set_background_color(text_layer, GColorRed);
-    text_layer_set_text_color(text_layer, GColorWhite);
+
+    // Use different colors for error vs normal dialogs
+    if (s_dialog_is_error) {
+        text_layer_set_background_color(text_layer, GColorRed);
+        text_layer_set_text_color(text_layer, GColorWhite);
+    } else {
+        text_layer_set_background_color(text_layer, GColorWhite);
+        text_layer_set_text_color(text_layer, GColorBlack);
+    }
 
     layer_add_child(window_layer, text_layer_get_layer(text_layer));
 }
@@ -1380,10 +1414,32 @@ static void dialog_window_unload(Window *window) {
     // Clean up
 }
 
-// Show dialog window
+// Show dialog window (normal style - white background)
 static void show_dialog(const char *message) {
     if (s_dialog_window) return;  // Already open
 
+    s_dialog_message = message;
+    s_dialog_is_error = false;  // Normal dialog style
+    s_dialog_window = window_create();
+    window_set_window_handlers(s_dialog_window, (WindowHandlers) {
+        .load = dialog_window_load,
+        .unload = dialog_window_unload,
+    });
+    window_set_click_config_provider(s_dialog_window, dialog_click_config);
+
+    window_stack_push(s_dialog_window, true);
+
+    // Auto-dismiss after 3 seconds (longer for normal dialogs with more text)
+    if (ko_timer) app_timer_cancel(ko_timer);
+    ko_timer = app_timer_register(3000, (AppTimerCallback)hide_dialog, NULL);
+}
+
+// Show Ko error dialog (red style - error message)
+static void show_ko_dialog(const char *message) {
+    if (s_dialog_window) return;  // Already open
+
+    s_dialog_message = message;
+    s_dialog_is_error = true;  // Error dialog style
     s_dialog_window = window_create();
     window_set_window_handlers(s_dialog_window, (WindowHandlers) {
         .load = dialog_window_load,
@@ -1404,6 +1460,80 @@ static void hide_dialog(void) {
     window_stack_remove(s_dialog_window, true);
     window_destroy(s_dialog_window);
     s_dialog_window = NULL;
+    layer_mark_dirty(s_canvas_layer);
+}
+
+// Scrollable dialog handlers
+static void scroll_dialog_window_load(Window *window) {
+    Layer *window_layer = window_get_root_layer(window);
+    GRect bounds = layer_get_bounds(window_layer);
+
+    // Create scroll layer
+    ScrollLayer *scroll_layer = scroll_layer_create(bounds);
+
+    // Create text layer with large bounds to accommodate text wrapping
+    TextLayer *text_layer = text_layer_create(GRect(0, 0, bounds.size.w, 2000));
+    text_layer_set_text(text_layer, s_dialog_message ? s_dialog_message : "");
+    text_layer_set_font(text_layer, fonts_get_system_font(FONT_KEY_GOTHIC_18));
+    text_layer_set_text_alignment(text_layer, GTextAlignmentCenter);
+    text_layer_set_overflow_mode(text_layer, GTextOverflowModeWordWrap);
+    text_layer_set_background_color(text_layer, GColorWhite);
+    text_layer_set_text_color(text_layer, GColorBlack);
+
+    // Calculate actual text size
+    GSize text_size = graphics_text_layout_get_content_size(
+        s_dialog_message ? s_dialog_message : "",
+        fonts_get_system_font(FONT_KEY_GOTHIC_18),
+        GRect(0, 0, bounds.size.w - 4, 2000),
+        GTextOverflowModeWordWrap,
+        GTextAlignmentCenter
+    );
+
+    // Resize text layer to actual content size
+    layer_set_bounds(text_layer_get_layer(text_layer), GRect(0, 0, bounds.size.w, text_size.h + 10));
+
+    // Add text layer to scroll layer
+    scroll_layer_add_child(scroll_layer, text_layer_get_layer(text_layer));
+
+    // Set scroll layer content size
+    scroll_layer_set_content_size(scroll_layer, GSize(bounds.size.w, text_size.h + 20));
+
+    // Enable UP/DOWN button scrolling
+    scroll_layer_set_click_config_onto_window(scroll_layer, window);
+
+    // Add scroll layer to window
+    layer_add_child(window_layer, scroll_layer_get_layer(scroll_layer));
+}
+
+static void scroll_dialog_click_config(void *context) {
+    window_single_click_subscribe(BUTTON_ID_BACK, (ClickHandler)hide_scroll_dialog);
+}
+
+static void scroll_dialog_window_unload(Window *window) {
+    // ScrollLayer and children are automatically cleaned up
+}
+
+// Show scrollable dialog (for Rules and other long text)
+static void show_scroll_dialog(const char *message) {
+    if (s_scroll_dialog_window) return;
+
+    s_dialog_message = message;
+    s_scroll_dialog_window = window_create();
+    window_set_window_handlers(s_scroll_dialog_window, (WindowHandlers) {
+        .load = scroll_dialog_window_load,
+        .unload = scroll_dialog_window_unload,
+    });
+    window_set_click_config_provider(s_scroll_dialog_window, scroll_dialog_click_config);
+
+    window_stack_push(s_scroll_dialog_window, true);
+}
+
+// Hide scrollable dialog
+static void hide_scroll_dialog(void) {
+    if (!s_scroll_dialog_window) return;
+    window_stack_remove(s_scroll_dialog_window, true);
+    window_destroy(s_scroll_dialog_window);
+    s_scroll_dialog_window = NULL;
     layer_mark_dirty(s_canvas_layer);
 }
 
