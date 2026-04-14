@@ -9,7 +9,6 @@
 - ✓ Add message / dialog UI mechanic - Ko message dialog, game over dialog, error dialog for occupied cells
 
 ## Future Improvements
-- Replace the basic AI algorithm with the new one Monte Carlo Search Tree described in ai_strategy.md
+- Make sure the current implementation of AI algorithm is on par with the Monte Carlo Search Tree described in ai_strategy.md
 - Split the code in src/c/main.c into multiple files, logically separate.
-- Show the current score estimate always with regards to Black (even if White is winning), meaning: "B-7.5" or "B+12.5".
-- On clicking Back, in VIEW mode, open the Menu.
+- Add unit tests for some important, critical parts, like AI strategy.

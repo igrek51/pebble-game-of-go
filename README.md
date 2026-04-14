@@ -28,6 +28,6 @@ How to Play:
 
 ---
 
-Love the game? Please leave a ❤️ on the Rebble App Store! Your support helps me keep improving the AI and adding new features like persistent saves and larger boards.
+Love the game? Please leave a ❤️ on the Pebble App Store! Your support helps me keep improving the AI and adding new features like persistent saves and larger boards.
 
 ![](gfx/banner-720x320.png)

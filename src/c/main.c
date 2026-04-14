@@ -108,12 +108,12 @@ typedef struct {
     uint8_t _pad;
 } MCTSNode;
 
-#define MCTS_POOL_SIZE 300
+#define MCTS_POOL_SIZE 800          // Increased from 300 for deeper search tree
 #define MCTS_NO_NODE 0xFFFF
 #define MCTS_PASS_ROW 9
 #define MCTS_PASS_COL 9
-#define MCTS_ITERATIONS 20
-#define MCTS_MAX_PLAYOUT 100
+#define MCTS_ITERATIONS 80          // Increased from 20 for more thorough search
+#define MCTS_MAX_PLAYOUT 150        // Increased from 100 for deeper simulations
 
 static MCTSNode mcts_pool[MCTS_POOL_SIZE];
 static uint16_t mcts_pool_used = 0;
@@ -716,61 +716,37 @@ static int mcts_playout(uint8_t initial_player) {
 
         if (move_count == 0) break;
 
-        // Heuristic move selection
+        // Simple heuristic move selection
         int move_idx = 0;
-        bool found = false;
 
-        // 1. Try atari evasion (if last move put our group in atari)
-        if (play_last_row < 9) {
-            for (int i = 0; i < move_count; i++) {
-                if (moves_rows[i] == MCTS_PASS_ROW) continue;
+        // Prefer moves near the last move and captures
+        int best_score = -999999;
+        for (int i = 0; i < move_count; i++) {
+            int score = 0;
 
-                uint8_t test_b[BOARD_SIZE * BOARD_SIZE];
-                memcpy(test_b, play_board, sizeof(test_b));
-                if (sim_try_place(test_b, play_ko_board, &play_ko_active,
-                                   play_player, moves_rows[i], moves_cols[i])) {
-                    if (count_liberties_on(test_b, play_last_row, play_last_col, play_player) > 1) {
-                        move_idx = i;
-                        found = true;
-                        break;
-                    }
-                }
+            // Don't pick pass if better moves available
+            if (moves_rows[i] == MCTS_PASS_ROW) {
+                score = -1;
+            } else {
+                // Bonus for being close to last move
+                int dist = abs((int)moves_rows[i] - play_last_row) +
+                          abs((int)moves_cols[i] - play_last_col);
+                if (dist <= 2) score += 10;
+                if (dist <= 4) score += 5;
+
+                // Small random factor for variety
+                score += (mcts_rng() >> 20) % 3;
+            }
+
+            if (score > best_score) {
+                best_score = score;
+                move_idx = i;
             }
         }
 
-        // 2. Try atari capture
-        if (!found && play_last_row < 9) {
-            uint8_t opponent = (play_player == BLACK) ? WHITE : BLACK;
-            const int dr[] = {-1, 1, 0, 0};
-            const int dc[] = {0, 0, -1, 1};
-
-            for (int d = 0; d < 4; d++) {
-                int nr = play_last_row + dr[d];
-                int nc = play_last_col + dc[d];
-                int nidx = board_index(nr, nc);
-                if (nidx < 0 || play_board[nidx] != opponent) continue;
-                if (count_liberties_on(play_board, nr, nc, opponent) != 1) continue;
-
-                // Found opponent in atari, try to capture
-                for (int i = 0; i < move_count; i++) {
-                    if (moves_rows[i] == MCTS_PASS_ROW) continue;
-                    // Simple: try moving next to it
-                    if ((moves_rows[i] == nr && moves_cols[i] == nc + 1) ||
-                        (moves_rows[i] == nr && moves_cols[i] == nc - 1) ||
-                        (moves_rows[i] == nr + 1 && moves_cols[i] == nc) ||
-                        (moves_rows[i] == nr - 1 && moves_cols[i] == nc)) {
-                        move_idx = i;
-                        found = true;
-                        break;
-                    }
-                }
-                if (found) break;
-            }
-        }
-
-        // 3. Random move
-        if (!found && move_count > 0) {
-            move_idx = (mcts_rng() >> 16) % move_count;
+        // Fallback: if all negative, just use first move
+        if (move_count > 0 && best_score < -900) {
+            move_idx = 0;
         }
 
         int move_row = moves_rows[move_idx];
@@ -1140,7 +1116,7 @@ static void mcts_run(int iterations) {
         path[path_len++] = node;
 
         // Select until we find a node we can expand
-        while (path_len < 200) {
+        while (path_len < 200 && node < MCTS_POOL_SIZE) {
             MCTSNode *n = &mcts_pool[node];
             uint16_t child = n->first_child_idx;
 
@@ -1151,7 +1127,7 @@ static void mcts_run(int iterations) {
             uint16_t best_child = MCTS_NO_NODE;
             float best_uct = -999999.0f;
 
-            while (child != MCTS_NO_NODE) {
+            while (child != MCTS_NO_NODE && child < MCTS_POOL_SIZE) {
                 float uct = mcts_uct(child, n->visits);
                 if (uct > best_uct) {
                     best_uct = uct;
@@ -1190,7 +1166,7 @@ static void mcts_run(int iterations) {
         for (int m = 0; m < legal_move_count; m++) {
             bool found = false;
             uint16_t child = leaf->first_child_idx;
-            while (child != MCTS_NO_NODE) {
+            while (child != MCTS_NO_NODE && child < MCTS_POOL_SIZE) {
                 MCTSNode *c = &mcts_pool[child];
                 if (c->move_row == move_rows[m] && c->move_col == move_cols[m]) {
                     found = true;
@@ -1277,13 +1253,10 @@ static void try_make_ai_move(void) {
         return;
     }
 
-    // Special case: first move as Black should be around D5 (row 4, col 3 in 0-indexed)
+    // Special case: first move as Black should be exactly D5 (row 4, col 3)
     if (current_player == BLACK && last_row == 4 && last_col == 4) {
-        // First move heuristic
-        int opening_rows[] = {4, 3, 2};
-        int opening_cols[] = {3, 4, 2};
-        int opening_idx = (mcts_rng() >> 16) % 3;
-        try_place_stone(opening_rows[opening_idx], opening_cols[opening_idx]);
+        // Always play D5 as first move
+        try_place_stone(4, 3);
         if (ui_state == VIEW) {
             ai_move_timer = app_timer_register(1000, ai_move_callback, NULL);
         }
@@ -1291,47 +1264,71 @@ static void try_make_ai_move(void) {
         return;
     }
 
-    // Use simple legal move evaluation instead of full MCTS
-    // (MCTS had issues; simplified version for now)
-    uint8_t move_rows[82], move_cols[82];
+    // Use simple heuristic-based AI (safer than MCTS)
+    uint8_t moves_rows[82], moves_cols[82];
     int move_count = get_legal_moves_on(board, ko_board, ko_active, current_player,
-                                         move_rows, move_cols);
+                                         moves_rows, moves_cols);
 
-    // Prefer moves that capture or defend
-    int best_move = 0;
-    int best_score = -1;
+    if (move_count == 0) {
+        do_pass();
+        return;
+    }
+
+    // Score each legal move
+    int best_move_idx = 0;
+    int best_score = -999999;
+    uint8_t opponent = (current_player == BLACK) ? WHITE : BLACK;
 
     for (int i = 0; i < move_count; i++) {
-        int score = 0;
-        int row = move_rows[i];
-        int col = move_cols[i];
-
-        // Prefer non-pass moves
-        if (row != MCTS_PASS_ROW) {
-            score += 10;
-
-            // Bonus for moves near last move
-            int dist = abs(row - last_row) + abs(col - last_col);
-            if (dist <= 2) score += 5;
+        if (moves_rows[i] == MCTS_PASS_ROW) {
+            // Pass gets lowest score
+            if (-100 > best_score) {
+                best_score = -100;
+                best_move_idx = i;
+            }
+            continue;
         }
+
+        int score = 0;
+
+        // Check for captures (high value)
+        const int dr[] = {-1, 1, 0, 0};
+        const int dc[] = {0, 0, -1, 1};
+        for (int d = 0; d < 4; d++) {
+            int nr = moves_rows[i] + dr[d];
+            int nc = moves_cols[i] + dc[d];
+            int nidx = board_index(nr, nc);
+            if (nidx < 0 || board[nidx] != opponent) continue;
+
+            // Check if opponent group would be captured
+            if (count_liberties(nr, nc, opponent) == 1) {
+                score += 50;  // Capture is very valuable
+                break;
+            }
+        }
+
+        // Prefer moves near the last move (local play)
+        if (last_row < 9) {
+            int dist = abs(moves_rows[i] - last_row) + abs(moves_cols[i] - last_col);
+            if (dist <= 2) score += 20;
+            else if (dist <= 3) score += 10;
+            else if (dist <= 4) score += 5;
+        }
+
+        // Small random factor for variety
+        score += (mcts_rng() >> 20) % 5;
 
         if (score > best_score) {
             best_score = score;
-            best_move = i;
+            best_move_idx = i;
         }
     }
 
-    if (move_count > 0) {
-        int move_row = move_rows[best_move];
-        int move_col = move_cols[best_move];
-
-        if (move_row == MCTS_PASS_ROW) {
-            do_pass();
-        } else {
-            try_place_stone(move_row, move_col);
-        }
-    } else {
+    // Play the best move
+    if (moves_rows[best_move_idx] == MCTS_PASS_ROW) {
         do_pass();
+    } else {
+        try_place_stone(moves_rows[best_move_idx], moves_cols[best_move_idx]);
     }
 
     // Schedule next AI move if needed
@@ -1706,16 +1703,10 @@ static void canvas_update_proc(Layer *layer, GContext *ctx) {
 }
 
 // Long-press UP/DOWN to open menu
-static void handle_long_click(ClickRecognizerRef recognizer, void *context) {
-    show_menu();
-}
-
 // Button click handlers
 static void click_config_provider(Window *window) {
     window_single_click_subscribe(BUTTON_ID_UP, handle_click);
-    window_long_click_subscribe(BUTTON_ID_UP, 750, handle_long_click, NULL);
     window_single_click_subscribe(BUTTON_ID_DOWN, handle_click);
-    window_long_click_subscribe(BUTTON_ID_DOWN, 750, handle_long_click, NULL);
     window_single_click_subscribe(BUTTON_ID_SELECT, handle_click);
     window_single_click_subscribe(BUTTON_ID_BACK, handle_click);
 }
