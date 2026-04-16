@@ -17,11 +17,13 @@ typedef struct {
     uint8_t _pad;
 } MCTSNode;
 
+// the total number of "nodes",
+// Each time the AI explores a potential board state, it creates a new node in this static array. Once it hits 2000 nodes, it cannot explore any deeper or wider
 #define MCTS_POOL_SIZE 2000
 #define MCTS_NO_NODE 0xFFFF
 #define MCTS_PASS_ROW 9
 #define MCTS_PASS_COL 9
-#define MCTS_ITERATIONS 200
+#define MCTS_ITERATIONS 100
 #define MCTS_MAX_PLAYOUT 120
 
 // AI functions

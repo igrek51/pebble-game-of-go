@@ -121,6 +121,11 @@ void remove_group(int start_row, int start_col, uint8_t color) {
     remove_group_on(board, start_row, start_col, color);
 }
 
+// Evaluate Area Scoring according to Chinese Go rules.
+// It calculates the "total area" controlled by each player
+// Iterative Flood-Fill (BFS).
+// "neutral" (dame) adds zero points to either player
+// Positive Value (> 0): Black is winning
 int score_board(uint8_t *b) {
     static bool visited[BOARD_SIZE * BOARD_SIZE];
     static int queue_r[BOARD_SIZE * BOARD_SIZE];

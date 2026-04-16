@@ -93,6 +93,7 @@ static const uint16_t UCT_EXPLORE_TABLE[] = {
 };
 
 // Fixed point UCT approximation: (wins * 1000) / visits + UCT_EXPLORE_TABLE[parent_visits] / sqrt(visits)
+// UCT - Upper Confidence Bound applied to Trees
 static int32_t mcts_uct(uint16_t child_idx, uint16_t parent_visits) {
     if (child_idx == MCTS_NO_NODE) return -999999;
     MCTSNode *node = &mcts_pool[child_idx];
@@ -415,6 +416,7 @@ void mcts_run(int iterations, uint8_t current_player, int last_row, int last_col
 
         mcts_path[mcts_path_len++] = node;
 
+        // 200 is safety bound to prevent memory corruption
         while (mcts_path_len < 200 && node < MCTS_POOL_SIZE) {
             MCTSNode *n = &mcts_pool[node];
             uint16_t child = n->first_child_idx;
