@@ -1,7 +1,7 @@
 #include "board.h"
-#include <string.h>
-#include <stdlib.h>
 #include "../game_state.h"
+#include <stdlib.h>
+#include <string.h>
 
 uint8_t board[BOARD_SIZE * BOARD_SIZE];
 uint8_t ko_board[BOARD_SIZE * BOARD_SIZE];
@@ -21,7 +21,8 @@ int board_index(int row, int col) {
 
 uint8_t get_stone(int row, int col) {
     int idx = board_index(row, col);
-    if (idx < 0) return 0; // EMPTY
+    if (idx < 0)
+        return 0; // EMPTY
     return board[idx];
 }
 
@@ -32,13 +33,15 @@ void set_stone(int row, int col, uint8_t color) {
     }
 }
 
-int count_liberties_on(uint8_t *b, int start_row, int start_col, uint8_t color) {
+int count_liberties_on(uint8_t *b, int start_row, int start_col,
+                       uint8_t color) {
     memset(_dfs_visited, 0, sizeof(_dfs_visited));
     int liberties = 0;
     int top = 0;
 
     int start_idx = board_index(start_row, start_col);
-    if (start_idx < 0 || b[start_idx] != color) return 0;
+    if (start_idx < 0 || b[start_idx] != color)
+        return 0;
 
     _dfs_stack_r[top] = start_row;
     _dfs_stack_c[top] = start_col;
@@ -57,8 +60,10 @@ int count_liberties_on(uint8_t *b, int start_row, int start_col, uint8_t color) 
             int nr = r + dr[d];
             int nc = c + dc[d];
             int nidx = board_index(nr, nc);
-            if (nidx < 0) continue;
-            if (_dfs_visited[nidx]) continue;
+            if (nidx < 0)
+                continue;
+            if (_dfs_visited[nidx])
+                continue;
 
             uint8_t ns = b[nidx];
             if (ns == EMPTY) {
@@ -80,7 +85,8 @@ void remove_group_on(uint8_t *b, int start_row, int start_col, uint8_t color) {
     int top = 0;
 
     int start_idx = board_index(start_row, start_col);
-    if (start_idx < 0 || b[start_idx] != color) return;
+    if (start_idx < 0 || b[start_idx] != color)
+        return;
 
     _dfs_stack_r[top] = start_row;
     _dfs_stack_c[top] = start_col;
@@ -95,14 +101,17 @@ void remove_group_on(uint8_t *b, int start_row, int start_col, uint8_t color) {
         int r = _dfs_stack_r[top];
         int c = _dfs_stack_c[top];
         int idx = board_index(r, c);
-        if (idx >= 0) b[idx] = EMPTY;
+        if (idx >= 0)
+            b[idx] = EMPTY;
 
         for (int d = 0; d < 4; d++) {
             int nr = r + dr[d];
             int nc = c + dc[d];
             int nidx = board_index(nr, nc);
-            if (nidx < 0) continue;
-            if (_dfs_visited[nidx]) continue;
+            if (nidx < 0)
+                continue;
+            if (_dfs_visited[nidx])
+                continue;
             if (b[nidx] == color) {
                 _dfs_visited[nidx] = true;
                 _dfs_stack_r[top] = nr;
@@ -137,8 +146,10 @@ int score_board(uint8_t *b) {
     int b_stones = 0, w_stones = 0;
 
     for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
-        if (b[i] == BLACK) b_stones++;
-        else if (b[i] == WHITE) w_stones++;
+        if (b[i] == BLACK)
+            b_stones++;
+        else if (b[i] == WHITE)
+            w_stones++;
     }
 
     const int dr[] = {-1, 1, 0, 0};
@@ -147,7 +158,8 @@ int score_board(uint8_t *b) {
     for (int sr = 0; sr < BOARD_SIZE; sr++) {
         for (int sc = 0; sc < BOARD_SIZE; sc++) {
             int sidx = board_index(sr, sc);
-            if (b[sidx] != EMPTY || visited[sidx]) continue;
+            if (b[sidx] != EMPTY || visited[sidx])
+                continue;
 
             int head = 0, tail = 0;
             queue_r[tail] = sr;
@@ -169,7 +181,8 @@ int score_board(uint8_t *b) {
                     int nr = r + dr[d];
                     int nc = c + dc[d];
                     int nidx = board_index(nr, nc);
-                    if (nidx < 0) continue;
+                    if (nidx < 0)
+                        continue;
 
                     uint8_t ns = b[nidx];
                     if (ns == BLACK) {
@@ -196,7 +209,7 @@ int score_board(uint8_t *b) {
     }
 
     int black_total = b_stones + b_territory;
-    int white_total = w_stones + w_territory + 7;  // komi 7.5 (approximate)
+    int white_total = w_stones + w_territory + 7; // komi 7.5 (approximate)
     return black_total - white_total;
 }
 
@@ -211,8 +224,10 @@ void compute_chinese_score(void) {
     int b_stones = 0, w_stones = 0;
 
     for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
-        if (board[i] == BLACK) b_stones++;
-        else if (board[i] == WHITE) w_stones++;
+        if (board[i] == BLACK)
+            b_stones++;
+        else if (board[i] == WHITE)
+            w_stones++;
     }
 
     const int dr[] = {-1, 1, 0, 0};
@@ -221,7 +236,8 @@ void compute_chinese_score(void) {
     for (int sr = 0; sr < BOARD_SIZE; sr++) {
         for (int sc = 0; sc < BOARD_SIZE; sc++) {
             int sidx = board_index(sr, sc);
-            if (board[sidx] != EMPTY || visited[sidx]) continue;
+            if (board[sidx] != EMPTY || visited[sidx])
+                continue;
 
             int head = 0, tail = 0;
             queue_r[tail] = sr;
@@ -243,7 +259,8 @@ void compute_chinese_score(void) {
                     int nr = r + dr[d];
                     int nc = c + dc[d];
                     int nidx = board_index(nr, nc);
-                    if (nidx < 0) continue;
+                    if (nidx < 0)
+                        continue;
 
                     uint8_t ns = board[nidx];
                     if (ns == BLACK) {
@@ -280,7 +297,8 @@ bool can_make_legal_move(uint8_t player) {
     for (int row = 0; row < BOARD_SIZE; row++) {
         for (int col = 0; col < BOARD_SIZE; col++) {
             int idx = board_index(row, col);
-            if (board[idx] != EMPTY) continue;
+            if (board[idx] != EMPTY)
+                continue;
 
             // Try placing a stone
             memcpy(temp_board, board, sizeof(board));
@@ -294,8 +312,10 @@ bool can_make_legal_move(uint8_t player) {
                 int nr = row + dr[d];
                 int nc = col + dc[d];
                 int nidx = board_index(nr, nc);
-                if (nidx < 0) continue;
-                if (temp_board[nidx] == opponent && count_liberties_on(temp_board, nr, nc, opponent) == 0) {
+                if (nidx < 0)
+                    continue;
+                if (temp_board[nidx] == opponent &&
+                    count_liberties_on(temp_board, nr, nc, opponent) == 0) {
                     remove_group_on(temp_board, nr, nc, opponent);
                 }
             }

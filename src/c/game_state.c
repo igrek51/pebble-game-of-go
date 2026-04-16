@@ -1,6 +1,6 @@
 #include "game_state.h"
-#include <string.h>
 #include "logic/board.h"
+#include <string.h>
 
 uint8_t current_player = BLACK;
 int consecutive_passes = 0;

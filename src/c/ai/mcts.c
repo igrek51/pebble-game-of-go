@@ -1,7 +1,7 @@
 #include "mcts.h"
-#include <string.h>
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
 
 static MCTSNode mcts_pool[MCTS_POOL_SIZE];
 static uint16_t mcts_pool_used = 0;
@@ -38,7 +38,7 @@ static uint8_t playout_move_cols[82];
 
 // Initialize Zobrist table using LCG
 void mcts_init_zobrist(void) {
-    rng_state = 2463534242UL;  // Initial seed
+    rng_state = 2463534242UL; // Initial seed
     for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
         for (int c = 0; c < 3; c++) {
             rng_state = rng_state * 1664525 + 1013904223;
@@ -55,7 +55,8 @@ static uint32_t mcts_rng(void) {
 
 // Allocate a node from the pool
 static uint16_t mcts_alloc(uint8_t move_row, uint8_t move_col, uint8_t player) {
-    if (mcts_pool_used >= MCTS_POOL_SIZE) return MCTS_NO_NODE;
+    if (mcts_pool_used >= MCTS_POOL_SIZE)
+        return MCTS_NO_NODE;
     uint16_t idx = mcts_pool_used++;
     mcts_pool[idx].visits = 0;
     mcts_pool[idx].wins = 0;
@@ -70,35 +71,32 @@ static uint16_t mcts_alloc(uint8_t move_row, uint8_t move_col, uint8_t player) {
 
 // Lookup table for 100 * 1.414 * sqrt(ln(x)) where x is 1..200
 static const uint16_t UCT_EXPLORE_TABLE[] = {
-    0, 0, 117, 140, 155, 166, 175, 182, 189, 195,
-    201, 205, 210, 214, 218, 222, 225, 228, 232, 235,
-    237, 240, 243, 245, 248, 250, 252, 255, 257, 259,
-    261, 263, 265, 267, 269, 271, 272, 274, 276, 277,
-    279, 281, 282, 284, 285, 287, 288, 290, 291, 292,
-    294, 295, 296, 298, 299, 300, 301, 303, 304, 305,
-    306, 307, 308, 309, 311, 312, 313, 314, 315, 316,
-    317, 318, 319, 320, 321, 322, 323, 324, 325, 326,
-    327, 328, 329, 330, 330, 331, 332, 333, 334, 335,
-    336, 336, 337, 338, 339, 340, 340, 341, 342, 343, 344,
-    345, 346, 347, 347, 348, 349, 350, 351, 351, 352,
-    353, 354, 354, 355, 356, 357, 357, 358, 359, 360,
-    360, 361, 362, 363, 363, 364, 365, 365, 366, 367,
-    367, 368, 369, 369, 370, 371, 372, 372, 373, 374,
-    374, 375, 376, 376, 377, 378, 378, 379, 379, 380,
-    381, 381, 382, 383, 383, 384, 385, 385, 386, 387,
-    387, 388, 388, 389, 390, 390, 391, 391, 392, 393,
-    393, 394, 394, 395, 396, 396, 397, 397, 398, 399,
-    399, 400, 400, 401, 401, 402, 403, 403, 404, 404,
-    405, 405, 406, 407, 407, 408, 408, 409, 409, 410
-};
+    0,   0,   117, 140, 155, 166, 175, 182, 189, 195, 201, 205, 210, 214, 218,
+    222, 225, 228, 232, 235, 237, 240, 243, 245, 248, 250, 252, 255, 257, 259,
+    261, 263, 265, 267, 269, 271, 272, 274, 276, 277, 279, 281, 282, 284, 285,
+    287, 288, 290, 291, 292, 294, 295, 296, 298, 299, 300, 301, 303, 304, 305,
+    306, 307, 308, 309, 311, 312, 313, 314, 315, 316, 317, 318, 319, 320, 321,
+    322, 323, 324, 325, 326, 327, 328, 329, 330, 330, 331, 332, 333, 334, 335,
+    336, 336, 337, 338, 339, 340, 340, 341, 342, 343, 344, 345, 346, 347, 347,
+    348, 349, 350, 351, 351, 352, 353, 354, 354, 355, 356, 357, 357, 358, 359,
+    360, 360, 361, 362, 363, 363, 364, 365, 365, 366, 367, 367, 368, 369, 369,
+    370, 371, 372, 372, 373, 374, 374, 375, 376, 376, 377, 378, 378, 379, 379,
+    380, 381, 381, 382, 383, 383, 384, 385, 385, 386, 387, 387, 388, 388, 389,
+    390, 390, 391, 391, 392, 393, 393, 394, 394, 395, 396, 396, 397, 397, 398,
+    399, 399, 400, 400, 401, 401, 402, 403, 403, 404, 404, 405, 405, 406, 407,
+    407, 408, 408, 409, 409, 410};
 
-// Fixed point UCT approximation: (wins * 1000) / visits + UCT_EXPLORE_TABLE[parent_visits] / sqrt(visits)
-// UCT - Upper Confidence Bound applied to Trees
+// Fixed point UCT approximation: (wins * 1000) / visits +
+// UCT_EXPLORE_TABLE[parent_visits] / sqrt(visits) UCT - Upper Confidence Bound
+// applied to Trees
 static int32_t mcts_uct(uint16_t child_idx, uint16_t parent_visits) {
-    if (child_idx == MCTS_NO_NODE) return -999999;
+    if (child_idx == MCTS_NO_NODE)
+        return -999999;
     MCTSNode *node = &mcts_pool[child_idx];
-    if (node->visits == 0) return 999999;
-    if (parent_visits == 0) return 999999;
+    if (node->visits == 0)
+        return 999999;
+    if (parent_visits == 0)
+        return 999999;
 
     int32_t exploit = ((int32_t)node->wins * 1000) / (int32_t)node->visits;
 
@@ -113,20 +111,34 @@ static int32_t mcts_uct(uint16_t child_idx, uint16_t parent_visits) {
     // Rough sqrt(N) for N <= 200
     uint32_t root_n = 1;
     uint32_t v = node->visits;
-    if (v < 4) root_n = 1;
-    else if (v < 9) root_n = 2;
-    else if (v < 16) root_n = 3;
-    else if (v < 25) root_n = 4;
-    else if (v < 36) root_n = 5;
-    else if (v < 49) root_n = 6;
-    else if (v < 64) root_n = 7;
-    else if (v < 81) root_n = 8;
-    else if (v < 100) root_n = 9;
-    else if (v < 121) root_n = 10;
-    else if (v < 144) root_n = 11;
-    else if (v < 169) root_n = 12;
-    else if (v < 196) root_n = 13;
-    else root_n = 14;
+    if (v < 4)
+        root_n = 1;
+    else if (v < 9)
+        root_n = 2;
+    else if (v < 16)
+        root_n = 3;
+    else if (v < 25)
+        root_n = 4;
+    else if (v < 36)
+        root_n = 5;
+    else if (v < 49)
+        root_n = 6;
+    else if (v < 64)
+        root_n = 7;
+    else if (v < 81)
+        root_n = 8;
+    else if (v < 100)
+        root_n = 9;
+    else if (v < 121)
+        root_n = 10;
+    else if (v < 144)
+        root_n = 11;
+    else if (v < 169)
+        root_n = 12;
+    else if (v < 196)
+        root_n = 13;
+    else
+        root_n = 14;
 
     int32_t explore = numerator / root_n;
 
@@ -135,7 +147,8 @@ static int32_t mcts_uct(uint16_t child_idx, uint16_t parent_visits) {
 
 // Get legal moves for a board
 static int get_legal_moves_on(uint8_t *b, uint8_t *ko_b, bool ko_active,
-uint8_t player, uint8_t *move_rows, uint8_t *move_cols) {
+                              uint8_t player, uint8_t *move_rows,
+                              uint8_t *move_cols) {
     (void)ko_b;
     uint8_t opponent = (player == BLACK) ? WHITE : BLACK;
     int count = 0;
@@ -143,7 +156,8 @@ uint8_t player, uint8_t *move_rows, uint8_t *move_cols) {
     for (int row = 0; row < BOARD_SIZE; row++) {
         for (int col = 0; col < BOARD_SIZE; col++) {
             int idx = board_index(row, col);
-            if (b[idx] != EMPTY) continue;
+            if (b[idx] != EMPTY)
+                continue;
 
             // Tentatively place stone
             b[idx] = player;
@@ -212,13 +226,14 @@ uint8_t player, uint8_t *move_rows, uint8_t *move_cols) {
 
 // Try to place stone on given board
 static bool sim_try_place(uint8_t *b, uint8_t *ko_b, bool *ko_active,
-uint8_t player, int row, int col) {
+                          uint8_t player, int row, int col) {
     if (row == MCTS_PASS_ROW && col == MCTS_PASS_COL) {
         return true;
     }
 
     int idx = board_index(row, col);
-    if (idx < 0 || b[idx] != EMPTY) return false;
+    if (idx < 0 || b[idx] != EMPTY)
+        return false;
 
     uint8_t opponent = (player == BLACK) ? WHITE : BLACK;
     memcpy(sim_temp_b, b, BOARD_SIZE * BOARD_SIZE);
@@ -232,8 +247,10 @@ uint8_t player, int row, int col) {
         int nr = row + dr[d];
         int nc = col + dc[d];
         int nidx = board_index(nr, nc);
-        if (nidx < 0) continue;
-        if (b[nidx] == opponent && count_liberties_on(b, nr, nc, opponent) == 0) {
+        if (nidx < 0)
+            continue;
+        if (b[nidx] == opponent &&
+            count_liberties_on(b, nr, nc, opponent) == 0) {
             remove_group_on(b, nr, nc, opponent);
             any_captured = true;
         }
@@ -257,13 +274,16 @@ uint8_t player, int row, int col) {
 // Find the ONLY liberty of a group at (r, c)
 static void find_liberty(uint8_t *b, int r, int c, int *lr, int *lc) {
     uint8_t color = b[board_index(r, c)];
-    *lr = -1; *lc = -1;
+    *lr = -1;
+    *lc = -1;
 
     static bool visited[81];
     memset(visited, 0, sizeof(visited));
     int stack_r[81], stack_c[81], top = 0;
 
-    stack_r[top] = r; stack_c[top] = c; top++;
+    stack_r[top] = r;
+    stack_c[top] = c;
+    top++;
     visited[board_index(r, c)] = true;
 
     const int dr[] = {-1, 1, 0, 0}, dc[] = {0, 0, -1, 1};
@@ -274,13 +294,18 @@ static void find_liberty(uint8_t *b, int r, int c, int *lr, int *lc) {
         for (int d = 0; d < 4; d++) {
             int nr = cr + dr[d], nc = cc + dc[d];
             int nidx = board_index(nr, nc);
-            if (nidx < 0 || visited[nidx]) continue;
+            if (nidx < 0 || visited[nidx])
+                continue;
             if (b[nidx] == EMPTY) {
-                *lr = nr; *lc = nc; // Found a liberty
-                // Note: we continue to check if there are MORE liberties
+                *lr = nr;
+                *lc = nc; // Found a liberty
+                          // Note: we continue to check if there are MORE
+                          // liberties
             } else if (b[nidx] == color) {
                 visited[nidx] = true;
-                stack_r[top] = nr; stack_c[top] = nc; top++;
+                stack_r[top] = nr;
+                stack_c[top] = nc;
+                top++;
             }
         }
     }
@@ -299,55 +324,70 @@ static int mcts_playout(uint8_t initial_player) {
     int playout_moves = 0;
 
     while (playout_moves < MCTS_MAX_PLAYOUT) {
-        int move_count = get_legal_moves_on(play_board, play_ko_board, play_ko_active,
-        play_player, playout_move_rows, playout_move_cols);
+        int move_count = get_legal_moves_on(
+            play_board, play_ko_board, play_ko_active, play_player,
+            playout_move_rows, playout_move_cols);
 
-        if (move_count == 0) break;
+        if (move_count == 0)
+            break;
 
         int move_idx = -1;
         uint8_t opp = (play_player == BLACK) ? WHITE : BLACK;
 
-        // Heuristic 1: Atari evasion - if any of OUR groups are in atari, escape.
+        // Heuristic 1: Atari evasion - if any of OUR groups are in atari,
+        // escape.
         if (move_idx < 0) {
             for (int r = 0; r < BOARD_SIZE; r++) {
                 for (int c = 0; c < BOARD_SIZE; c++) {
                     int idx = board_index(r, c);
-                    if (play_board[idx] == play_player && count_liberties_on(play_board, r, c, play_player) == 1) {
+                    if (play_board[idx] == play_player &&
+                        count_liberties_on(play_board, r, c, play_player) ==
+                            1) {
                         int lr, lc;
                         find_liberty(play_board, r, c, &lr, &lc);
                         if (lr != -1) {
                             for (int m = 0; m < move_count; m++) {
-                                if (playout_move_rows[m] == lr && playout_move_cols[m] == lc) {
-                                    move_idx = m; break;
+                                if (playout_move_rows[m] == lr &&
+                                    playout_move_cols[m] == lc) {
+                                    move_idx = m;
+                                    break;
                                 }
                             }
                         }
                     }
-                    if (move_idx >= 0) break;
+                    if (move_idx >= 0)
+                        break;
                 }
-                if (move_idx >= 0) break;
+                if (move_idx >= 0)
+                    break;
             }
         }
 
-        // Heuristic 2: Atari capture - if any of OPPONENT groups are in atari, capture them.
+        // Heuristic 2: Atari capture - if any of OPPONENT groups are in atari,
+        // capture them.
         if (move_idx < 0) {
             for (int r = 0; r < BOARD_SIZE; r++) {
                 for (int c = 0; c < BOARD_SIZE; c++) {
                     int idx = board_index(r, c);
-                    if (play_board[idx] == opp && count_liberties_on(play_board, r, c, opp) == 1) {
+                    if (play_board[idx] == opp &&
+                        count_liberties_on(play_board, r, c, opp) == 1) {
                         int lr, lc;
                         find_liberty(play_board, r, c, &lr, &lc);
                         if (lr != -1) {
                             for (int m = 0; m < move_count; m++) {
-                                if (playout_move_rows[m] == lr && playout_move_cols[m] == lc) {
-                                    move_idx = m; break;
+                                if (playout_move_rows[m] == lr &&
+                                    playout_move_cols[m] == lc) {
+                                    move_idx = m;
+                                    break;
                                 }
                             }
                         }
                     }
-                    if (move_idx >= 0) break;
+                    if (move_idx >= 0)
+                        break;
                 }
-                if (move_idx >= 0) break;
+                if (move_idx >= 0)
+                    break;
             }
         }
 
@@ -359,13 +399,18 @@ static int mcts_playout(uint8_t initial_player) {
                 if (playout_move_rows[i] != MCTS_PASS_ROW) {
                     // Distance to last move (Manhattan)
                     int dist = abs((int)playout_move_rows[i] - play_last_row) +
-                    abs((int)playout_move_cols[i] - play_last_col);
-                    if (dist <= 2) score += 20;
-                    else if (dist <= 4) score += 10;
+                               abs((int)playout_move_cols[i] - play_last_col);
+                    if (dist <= 2)
+                        score += 20;
+                    else if (dist <= 4)
+                        score += 10;
 
                     // Penalty for 1st line (edge) moves if far from last move
-                    if ((playout_move_rows[i] == 0 || playout_move_rows[i] == 8 ||
-                    playout_move_cols[i] == 0 || playout_move_cols[i] == 8) && dist > 2) {
+                    if ((playout_move_rows[i] == 0 ||
+                         playout_move_rows[i] == 8 ||
+                         playout_move_cols[i] == 0 ||
+                         playout_move_cols[i] == 8) &&
+                        dist > 2) {
                         score -= 15;
                     }
                 }
@@ -376,17 +421,20 @@ static int mcts_playout(uint8_t initial_player) {
             }
         }
 
-        if (move_idx < 0) move_idx = (mcts_rng() >> 16) % move_count;
+        if (move_idx < 0)
+            move_idx = (mcts_rng() >> 16) % move_count;
 
         int move_row = playout_move_rows[move_idx];
         int move_col = playout_move_cols[move_idx];
 
         if (move_row == MCTS_PASS_ROW && move_col == MCTS_PASS_COL) {
             play_passes++;
-            if (play_passes >= 2) break;
+            if (play_passes >= 2)
+                break;
         } else {
             play_passes = 0;
-            sim_try_place(play_board, play_ko_board, &play_ko_active, play_player, move_row, move_col);
+            sim_try_place(play_board, play_ko_board, &play_ko_active,
+                          play_player, move_row, move_col);
             play_last_row = move_row;
             play_last_col = move_col;
         }
@@ -399,7 +447,8 @@ static int mcts_playout(uint8_t initial_player) {
     return (score > 0) ? 1 : 0;
 }
 
-void mcts_run(int iterations, uint8_t current_player, int last_row, int last_col, int consecutive_passes) {
+void mcts_run(int iterations, uint8_t current_player, int last_row,
+              int last_col, int consecutive_passes) {
     mcts_pool_used = 0;
     mcts_root = mcts_alloc(MCTS_PASS_ROW, MCTS_PASS_COL, EMPTY);
 
@@ -420,7 +469,8 @@ void mcts_run(int iterations, uint8_t current_player, int last_row, int last_col
         while (mcts_path_len < 200 && node < MCTS_POOL_SIZE) {
             MCTSNode *n = &mcts_pool[node];
             uint16_t child = n->first_child_idx;
-            if (child == MCTS_NO_NODE) break;
+            if (child == MCTS_NO_NODE)
+                break;
 
             uint16_t best_child = MCTS_NO_NODE;
             int32_t best_uct = -999999;
@@ -434,15 +484,16 @@ void mcts_run(int iterations, uint8_t current_player, int last_row, int last_col
                 child = mcts_pool[child].next_sibling_idx;
             }
 
-            if (best_child == MCTS_NO_NODE) break;
+            if (best_child == MCTS_NO_NODE)
+                break;
 
             MCTSNode *bc = &mcts_pool[best_child];
             if (bc->move_row == MCTS_PASS_ROW) {
                 sim_passes++;
             } else {
                 sim_passes = 0;
-                sim_try_place(sim_board, sim_ko_board, &sim_ko_active, sim_player,
-                bc->move_row, bc->move_col);
+                sim_try_place(sim_board, sim_ko_board, &sim_ko_active,
+                              sim_player, bc->move_row, bc->move_col);
                 sim_last_row = bc->move_row;
                 sim_last_col = bc->move_col;
             }
@@ -454,8 +505,9 @@ void mcts_run(int iterations, uint8_t current_player, int last_row, int last_col
 
         MCTSNode *leaf = &mcts_pool[node];
         uint8_t move_rows[82], move_cols[82];
-        int legal_move_count = get_legal_moves_on(sim_board, sim_ko_board, sim_ko_active,
-        sim_player, move_rows, move_cols);
+        int legal_move_count =
+            get_legal_moves_on(sim_board, sim_ko_board, sim_ko_active,
+                               sim_player, move_rows, move_cols);
 
         int unexpanded_idx = -1;
         for (int m = 0; m < legal_move_count; m++) {
@@ -463,7 +515,8 @@ void mcts_run(int iterations, uint8_t current_player, int last_row, int last_col
             uint16_t child = leaf->first_child_idx;
             while (child != MCTS_NO_NODE && child < MCTS_POOL_SIZE) {
                 MCTSNode *c = &mcts_pool[child];
-                if (c->move_row == move_rows[m] && c->move_col == move_cols[m]) {
+                if (c->move_row == move_rows[m] &&
+                    c->move_col == move_cols[m]) {
                     found = true;
                     break;
                 }
@@ -476,8 +529,9 @@ void mcts_run(int iterations, uint8_t current_player, int last_row, int last_col
         }
 
         if (unexpanded_idx >= 0) {
-            uint16_t new_child = mcts_alloc(move_rows[unexpanded_idx], move_cols[unexpanded_idx],
-            sim_player);
+            uint16_t new_child =
+                mcts_alloc(move_rows[unexpanded_idx], move_cols[unexpanded_idx],
+                           sim_player);
             if (new_child != MCTS_NO_NODE) {
                 if (leaf->first_child_idx == MCTS_NO_NODE) {
                     leaf->first_child_idx = new_child;
@@ -493,8 +547,9 @@ void mcts_run(int iterations, uint8_t current_player, int last_row, int last_col
                     sim_passes++;
                 } else {
                     sim_passes = 0;
-                    sim_try_place(sim_board, sim_ko_board, &sim_ko_active, sim_player,
-                    move_rows[unexpanded_idx], move_cols[unexpanded_idx]);
+                    sim_try_place(sim_board, sim_ko_board, &sim_ko_active,
+                                  sim_player, move_rows[unexpanded_idx],
+                                  move_cols[unexpanded_idx]);
                     sim_last_row = move_rows[unexpanded_idx];
                     sim_last_col = move_cols[unexpanded_idx];
                 }
@@ -553,14 +608,17 @@ int estimate_score_10x_logic(void) {
     int black_territory_10x = 0, white_territory_10x = 0;
 
     for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
-        if (board[i] == BLACK) black_stones++;
-        else if (board[i] == WHITE) white_stones++;
+        if (board[i] == BLACK)
+            black_stones++;
+        else if (board[i] == WHITE)
+            white_stones++;
     }
 
     for (int row = 0; row < BOARD_SIZE; row++) {
         for (int col = 0; col < BOARD_SIZE; col++) {
             int idx = board_index(row, col);
-            if (board[idx] != EMPTY) continue;
+            if (board[idx] != EMPTY)
+                continue;
 
             int min_black_dist = 999;
             int min_white_dist = 999;
@@ -568,7 +626,8 @@ int estimate_score_10x_logic(void) {
             for (int r = 0; r < BOARD_SIZE; r++) {
                 for (int c = 0; c < BOARD_SIZE; c++) {
                     int stone_idx = board_index(r, c);
-                    if (board[stone_idx] == EMPTY) continue;
+                    if (board[stone_idx] == EMPTY)
+                        continue;
                     int dist = abs(row - r) + abs(col - c);
 
                     if (board[stone_idx] == BLACK && dist < min_black_dist) {
@@ -580,10 +639,13 @@ int estimate_score_10x_logic(void) {
                 }
             }
 
-            int black_value = (min_black_dist <= 0) ? 10 : (10 - (min_black_dist - 1));
-            int white_value = (min_white_dist <= 0) ? 10 : (10 - (min_white_dist - 1));
+            int black_value =
+                (min_black_dist <= 0) ? 10 : (10 - (min_black_dist - 1));
+            int white_value =
+                (min_white_dist <= 0) ? 10 : (10 - (min_white_dist - 1));
 
-            if (black_value < 2) black_value = 2;
+            if (black_value < 2)
+                black_value = 2;
             // Assign territory based on nearest stone (weighted by distance)
             if (min_black_dist < min_white_dist) {
                 black_territory_10x += black_value;
@@ -603,7 +665,8 @@ int estimate_score_10x_logic(void) {
     return black_score_10x - white_score_10x;
 }
 
-void suggest_hint_logic(uint8_t current_player, int last_row, int last_col, int *best_row, int *best_col) {
+void suggest_hint_logic(uint8_t current_player, int last_row, int last_col,
+                        int *best_row, int *best_col) {
     // Run MCTS search to find the best move
     mcts_run(MCTS_ITERATIONS, current_player, last_row, last_col, 0);
     uint16_t best_node = mcts_get_best_move();
