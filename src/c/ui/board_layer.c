@@ -30,8 +30,12 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row, int 
     if (ui_state == GAME_OVER_STATE) {
         snprintf(left_text, sizeof(left_text), "%s", (black_score > white_score) ? "Black won" : "White won");
     } else {
-        snprintf(left_text, sizeof(left_text), "%s to move",
-            current_player == BLACK ? "Black" : "White");
+        bool is_ai = ((game_mode == MODE_BLACK_AI && current_player == BLACK) ||
+                      (game_mode == MODE_WHITE_AI && current_player == WHITE) ||
+                      (game_mode == MODE_AI_AI));
+        snprintf(left_text, sizeof(left_text), "%s %s",
+            (current_player == BLACK ? "Black" : "White"),
+            is_ai ? "thinking" : "to move");
     }
     graphics_draw_text(ctx, left_text, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
         GRect(5, 2, 120, 20), GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);

@@ -8,12 +8,9 @@
 - ✓ Improve UI (row/column labels, status display) - coordinates, hoshi dots, status bar with player
 - ✓ Add message / dialog UI mechanic - Ko message dialog, game over dialog, error dialog for occupied cells
 - Add unit tests for some important, critical parts, like AI strategy.
+- Let's change the UI slightly. After the game ends, and the dialog is canceled. Show on the to bar the text "Black won" or "White won" and then also show the actual final score on the top right, like "B+0.5" (Black won by 0.5 points).
 
 ## Future Improvements
-- Make sure the current implementation of AI algorithm is on par with the Monte Carlo Search Tree described in ai_strategy.md
-
-- I feel like the AI strategy is stupid, putting it bluntly. Sometimes it plays in the corner, out of blue, which is considered a worst move. Verify if everything is correct with the algorithm and it's on par with general design @docs/ai_strategy.md. For instance, it should prioritize escaping atari, and capturing, but I'm pretty sure it's not doing it. You can allocate more resources, more time, more search depth, iterations, etc. to the algorithm. So far it's quite fast, we can improve it at slight cost of the time.
-
 - Increase the distance where you look for Atari evasion or Atari capture. Currently I think it's set to 1 (nearest neighbours), but I think that possibly it should look on the whole board.
 
 - Explain what these numbers do
@@ -23,6 +20,8 @@
 #define MCTS_MAX_PLAYOUT 120
 ```
 
-- Let's change the UI slightly. After the game ends, and the dialog is canceled. Show on the to bar the text "Black won" or "White won" and then also show the actual final score on the top right, like "B+0.5" (Black won by 0.5 points). Additionally, when an AI passed or human player passed, show the dismissable message dialog "Black passed", or "White passed".
+- Make sure the current implementation of AI algorithm is on par with the Monte Carlo Search Tree described in ai_strategy.md
 
-- when playing against AI, and it's a move of AI, show on top "White thinking" or "Black thinking".
+- I feel like the AI strategy is very stupid. Sometimes it plays in the corner, out of blue, which is considered a worst move. Verify if everything is correct with the algorithm and it's on par with general design @docs/ai_strategy.md. For instance, it should prioritize escaping atari, and capturing, but I'm pretty sure it's not doing it. You can allocate more resources, more time, more search depth, iterations, etc. to the algorithm. So far it's quite fast, we can improve it at slight cost of the time.
+
+- Can you improve the current score assessment? How is it evaluated?
