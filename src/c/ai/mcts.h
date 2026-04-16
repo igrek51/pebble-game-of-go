@@ -17,12 +17,12 @@ typedef struct {
     uint8_t _pad;
 } MCTSNode;
 
-#define MCTS_POOL_SIZE 800
+#define MCTS_POOL_SIZE 2000
 #define MCTS_NO_NODE 0xFFFF
 #define MCTS_PASS_ROW 9
 #define MCTS_PASS_COL 9
-#define MCTS_ITERATIONS 20
-#define MCTS_MAX_PLAYOUT 50
+#define MCTS_ITERATIONS 200
+#define MCTS_MAX_PLAYOUT 120
 
 // AI functions
 void mcts_init_zobrist(void);

@@ -68,7 +68,31 @@ static uint16_t mcts_alloc(uint8_t move_row, uint8_t move_col, uint8_t player) {
     return idx;
 }
 
-// Fixed point UCT approximation: (wins * 100) / visits + 141 * (parent_visits / (visits * 2))
+// Lookup table for 100 * 1.414 * sqrt(ln(x)) where x is 1..200
+static const uint16_t UCT_EXPLORE_TABLE[] = {
+    0, 0, 117, 140, 155, 166, 175, 182, 189, 195,
+    201, 205, 210, 214, 218, 222, 225, 228, 232, 235,
+    237, 240, 243, 245, 248, 250, 252, 255, 257, 259,
+    261, 263, 265, 267, 269, 271, 272, 274, 276, 277,
+    279, 281, 282, 284, 285, 287, 288, 290, 291, 292,
+    294, 295, 296, 298, 299, 300, 301, 303, 304, 305,
+    306, 307, 308, 309, 311, 312, 313, 314, 315, 316,
+    317, 318, 319, 320, 321, 322, 323, 324, 325, 326,
+    327, 328, 329, 330, 330, 331, 332, 333, 334, 335,
+    336, 336, 337, 338, 339, 340, 340, 341, 342, 343, 344,
+    345, 346, 347, 347, 348, 349, 350, 351, 351, 352,
+    353, 354, 354, 355, 356, 357, 357, 358, 359, 360,
+    360, 361, 362, 363, 363, 364, 365, 365, 366, 367,
+    367, 368, 369, 369, 370, 371, 372, 372, 373, 374,
+    374, 375, 376, 376, 377, 378, 378, 379, 379, 380,
+    381, 381, 382, 383, 383, 384, 385, 385, 386, 387,
+    387, 388, 388, 389, 390, 390, 391, 391, 392, 393,
+    393, 394, 394, 395, 396, 396, 397, 397, 398, 399,
+    399, 400, 400, 401, 401, 402, 403, 403, 404, 404,
+    405, 405, 406, 407, 407, 408, 408, 409, 409, 410
+};
+
+// Fixed point UCT approximation: (wins * 1000) / visits + UCT_EXPLORE_TABLE[parent_visits] / sqrt(visits)
 static int32_t mcts_uct(uint16_t child_idx, uint16_t parent_visits) {
     if (child_idx == MCTS_NO_NODE) return -999999;
     MCTSNode *node = &mcts_pool[child_idx];
@@ -76,9 +100,34 @@ static int32_t mcts_uct(uint16_t child_idx, uint16_t parent_visits) {
     if (parent_visits == 0) return 999999;
 
     int32_t exploit = ((int32_t)node->wins * 1000) / (int32_t)node->visits;
-    // Very rough approximation of sqrt(ln(N)/n) using (N/n) scaled
-    int32_t explore = (1414 * (int32_t)parent_visits) / ((int32_t)node->visits * 10);
-    if (explore > 2000) explore = 2000; // Cap exploration
+    
+    // exploration = C * sqrt(ln(Np)/N) = (C * sqrt(ln(Np))) / sqrt(N)
+    uint32_t numerator = 0;
+    if (parent_visits < 200) {
+        numerator = UCT_EXPLORE_TABLE[parent_visits] * 10;
+    } else {
+        numerator = 4100;
+    }
+
+    // Rough sqrt(N) for N <= 200
+    uint32_t root_n = 1;
+    uint32_t v = node->visits;
+    if (v < 4) root_n = 1;
+    else if (v < 9) root_n = 2;
+    else if (v < 16) root_n = 3;
+    else if (v < 25) root_n = 4;
+    else if (v < 36) root_n = 5;
+    else if (v < 49) root_n = 6;
+    else if (v < 64) root_n = 7;
+    else if (v < 81) root_n = 8;
+    else if (v < 100) root_n = 9;
+    else if (v < 121) root_n = 10;
+    else if (v < 144) root_n = 11;
+    else if (v < 169) root_n = 12;
+    else if (v < 196) root_n = 13;
+    else root_n = 14;
+
+    int32_t explore = numerator / root_n;
     
     return exploit + explore;
 }
@@ -204,6 +253,38 @@ static bool sim_try_place(uint8_t *b, uint8_t *ko_b, bool *ko_active,
     return true;
 }
 
+// Find the ONLY liberty of a group at (r, c)
+static void find_liberty(uint8_t *b, int r, int c, int *lr, int *lc) {
+    uint8_t color = b[board_index(r, c)];
+    *lr = -1; *lc = -1;
+
+    static bool visited[81];
+    memset(visited, 0, sizeof(visited));
+    int stack_r[81], stack_c[81], top = 0;
+
+    stack_r[top] = r; stack_c[top] = c; top++;
+    visited[board_index(r, c)] = true;
+
+    const int dr[] = {-1, 1, 0, 0}, dc[] = {0, 0, -1, 1};
+
+    while (top > 0) {
+        top--;
+        int cr = stack_r[top], cc = stack_c[top];
+        for (int d = 0; d < 4; d++) {
+            int nr = cr + dr[d], nc = cc + dc[d];
+            int nidx = board_index(nr, nc);
+            if (nidx < 0 || visited[nidx]) continue;
+            if (b[nidx] == EMPTY) {
+                *lr = nr; *lc = nc; // Found a liberty
+                // Note: we continue to check if there are MORE liberties
+            } else if (b[nidx] == color) {
+                visited[nidx] = true;
+                stack_r[top] = nr; stack_c[top] = nc; top++;
+            }
+        }
+    }
+}
+
 // Heavy playout: simulate game to completion with heuristics
 static int mcts_playout(uint8_t initial_player) {
     memcpy(play_board, sim_board, sizeof(play_board));
@@ -222,8 +303,81 @@ static int mcts_playout(uint8_t initial_player) {
 
         if (move_count == 0) break;
 
-        // Simple random move
-        int move_idx = (mcts_rng() >> 16) % move_count;
+        int move_idx = -1;
+        uint8_t opp = (play_player == BLACK) ? WHITE : BLACK;
+        const int dr4[] = {-1, 1, 0, 0}, dc4[] = {0, 0, -1, 1};
+
+        // Heuristic 1: Atari evasion - if last move put OUR group in atari, prefer escaping
+        if (play_last_row != MCTS_PASS_ROW) {
+            for (int d = 0; d < 4; d++) {
+                int nr = play_last_row + dr4[d], nc = play_last_col + dc4[d];
+                int nidx = board_index(nr, nc);
+                if (nidx >= 0 && play_board[nidx] == play_player) {
+                    if (count_liberties_on(play_board, nr, nc, play_player) == 1) {
+                        int lr, lc;
+                        find_liberty(play_board, nr, nc, &lr, &lc);
+                        if (lr != -1) {
+                            for (int m = 0; m < move_count; m++) {
+                                if (playout_move_rows[m] == lr && playout_move_cols[m] == lc) {
+                                    move_idx = m; break;
+                                }
+                            }
+                        }
+                    }
+                }
+                if (move_idx >= 0) break;
+            }
+        }
+
+        // Heuristic 2: Atari capture - if opponent's group has 1 liberty, capture it
+        if (move_idx < 0 && play_last_row != MCTS_PASS_ROW) {
+            for (int d = 0; d < 4; d++) {
+                int nr = play_last_row + dr4[d], nc = play_last_col + dc4[d];
+                int nidx = board_index(nr, nc);
+                if (nidx >= 0 && play_board[nidx] == opp) {
+                    if (count_liberties_on(play_board, nr, nc, opp) == 1) {
+                        int lr, lc;
+                        find_liberty(play_board, nr, nc, &lr, &lc);
+                        if (lr != -1) {
+                            for (int m = 0; m < move_count; m++) {
+                                if (playout_move_rows[m] == lr && playout_move_cols[m] == lc) {
+                                    move_idx = m; break;
+                                }
+                            }
+                        }
+                    }
+                }
+                if (move_idx >= 0) break;
+            }
+        }
+
+        // Fallback: proximity-weighted random move (avoids random corner moves)
+        if (move_idx < 0) {
+            int best_fallback_score = -999;
+            for (int i = 0; i < move_count; i++) {
+                int score = (mcts_rng() % 10); // Jitter
+                if (playout_move_rows[i] != MCTS_PASS_ROW) {
+                    // Distance to last move (Manhattan)
+                    int dist = abs((int)playout_move_rows[i] - play_last_row) + 
+                               abs((int)playout_move_cols[i] - play_last_col);
+                    if (dist <= 2) score += 20;
+                    else if (dist <= 4) score += 10;
+                    
+                    // Penalty for 1st line (edge) moves if far from last move
+                    if ((playout_move_rows[i] == 0 || playout_move_rows[i] == 8 ||
+                         playout_move_cols[i] == 0 || playout_move_cols[i] == 8) && dist > 2) {
+                        score -= 15;
+                    }
+                }
+                if (score > best_fallback_score) {
+                    best_fallback_score = score;
+                    move_idx = i;
+                }
+            }
+        }
+
+        if (move_idx < 0) move_idx = (mcts_rng() >> 16) % move_count;
+
         int move_row = playout_move_rows[move_idx];
         int move_col = playout_move_cols[move_idx];
 

@@ -13,3 +13,13 @@
 - Make sure the current implementation of AI algorithm is on par with the Monte Carlo Search Tree described in ai_strategy.md
 
 - I feel like the AI strategy is stupid, putting it bluntly. Sometimes it plays in the corner, out of blue, which is considered a worst move. Verify if everything is correct with the algorithm and it's on par with general design @docs/ai_strategy.md. For instance, it should prioritize escaping atari, and capturing, but I'm pretty sure it's not doing it. You can allocate more resources, more time, more search depth, iterations, etc. to the algorithm. So far it's quite fast, we can improve it at slight cost of the time.
+
+- Increase the distance where you look for Atari evasion or Atari capture. Currently I think it's set to 1 (nearest neighbours), but I think that possibly it should look on the whole board.
+
+- Explain what these numbers do
+```
+#define MCTS_POOL_SIZE 2000
+#define MCTS_ITERATIONS 200
+#define MCTS_MAX_PLAYOUT 120
+```
+
