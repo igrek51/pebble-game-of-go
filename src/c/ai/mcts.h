@@ -7,7 +7,7 @@
 
 // MCTS node structure (12 bytes)
 typedef struct {
-    uint16_t visits;
+    uint16_t visits; // how many times the MCTS algorithm has traversed through that specific node
     uint16_t wins;
     uint16_t first_child_idx;   // 0xFFFF = no children
     uint16_t next_sibling_idx;  // 0xFFFF = no sibling

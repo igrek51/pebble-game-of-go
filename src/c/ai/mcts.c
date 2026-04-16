@@ -599,56 +599,14 @@ int estimate_score_10x_logic(void) {
 }
 
 void suggest_hint_logic(uint8_t current_player, int last_row, int last_col, int *best_row, int *best_col) {
-    int candidates[8][2] = {
-        {last_row - 1, last_col}, {last_row + 1, last_col},
-        {last_row, last_col - 1}, {last_row, last_col + 1},
-        {last_row - 1, last_col - 1}, {last_row - 1, last_col + 1},
-        {last_row + 1, last_col - 1}, {last_row + 1, last_col + 1}
-    };
-
-    *best_row = -1;
-    *best_col = -1;
-    int best_score = -999999;
-
-    for (int i = 0; i < 8; i++) {
-        int row = candidates[i][0];
-        int col = candidates[i][1];
-        int idx = board_index(row, col);
-
-        if (idx < 0 || board[idx] != EMPTY) continue;
-
-        uint8_t opponent = (current_player == BLACK) ? WHITE : BLACK;
-        uint8_t temp_board[BOARD_SIZE * BOARD_SIZE];
-        memcpy(temp_board, board, sizeof(board));
-
-        board[idx] = current_player;
-
-        const int dr[] = {-1, 1, 0, 0};
-        const int dc[] = {0, 0, -1, 1};
-        for (int d = 0; d < 4; d++) {
-            int nr = row + dr[d];
-            int nc = col + dc[d];
-            int nidx = board_index(nr, nc);
-            if (nidx >= 0 && board[nidx] == opponent && count_liberties(nr, nc, opponent) == 0) {
-                remove_group(nr, nc, opponent);
-            }
-        }
-
-        bool is_legal = count_liberties(row, col, current_player) > 0;
-
-        if (is_legal) {
-            int score_10x = estimate_score_10x_logic();
-            if (current_player == WHITE) {
-                score_10x = -score_10x;
-            }
-
-            if (score_10x > best_score) {
-                best_score = score_10x;
-                *best_row = row;
-                *best_col = col;
-            }
-        }
-
-        memcpy(board, temp_board, sizeof(board));
+    // Run MCTS search to find the best move
+    mcts_run(MCTS_ITERATIONS, current_player, last_row, last_col, 0);
+    uint16_t best_node = mcts_get_best_move();
+    
+    if (best_node == MCTS_NO_NODE) {
+        *best_row = -1;
+        *best_col = -1;
+    } else {
+        mcts_get_move_coords(best_node, best_row, best_col);
     }
 }
