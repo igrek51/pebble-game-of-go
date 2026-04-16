@@ -49,7 +49,7 @@ static void init_board_full(void) {
     }
 
     if (game_mode == MODE_BLACK_AI || game_mode == MODE_AI_AI) {
-        ai_move_timer = app_timer_register(500, ai_move_callback, NULL);
+        ai_move_timer = app_timer_register(300, ai_move_callback, NULL);
     }
 }
 
@@ -73,7 +73,7 @@ static void do_pass_ui(void) {
                       (game_mode == MODE_AI_AI);
     if (next_is_ai) {
         if (ai_move_timer) app_timer_cancel(ai_move_timer);
-        ai_move_timer = app_timer_register(500, ai_move_callback, NULL);
+        ai_move_timer = app_timer_register(300, ai_move_callback, NULL);
     }
 }
 
@@ -131,7 +131,7 @@ static bool try_place_stone_ui(int row, int col) {
                       (game_mode == MODE_AI_AI);
     if (next_is_ai) {
         if (ai_move_timer) app_timer_cancel(ai_move_timer);
-        ai_move_timer = app_timer_register(500, ai_move_callback, NULL);
+        ai_move_timer = app_timer_register(300, ai_move_callback, NULL);
     }
 
     return true;

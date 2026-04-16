@@ -305,17 +305,15 @@ static int mcts_playout(uint8_t initial_player) {
 
         int move_idx = -1;
         uint8_t opp = (play_player == BLACK) ? WHITE : BLACK;
-        const int dr4[] = {-1, 1, 0, 0}, dc4[] = {0, 0, -1, 1};
 
-        // Heuristic 1: Atari evasion - if last move put OUR group in atari, prefer escaping
-        if (play_last_row != MCTS_PASS_ROW) {
-            for (int d = 0; d < 4; d++) {
-                int nr = play_last_row + dr4[d], nc = play_last_col + dc4[d];
-                int nidx = board_index(nr, nc);
-                if (nidx >= 0 && play_board[nidx] == play_player) {
-                    if (count_liberties_on(play_board, nr, nc, play_player) == 1) {
+        // Heuristic 1: Atari evasion - if any of OUR groups are in atari, escape.
+        if (move_idx < 0) {
+            for (int r = 0; r < BOARD_SIZE; r++) {
+                for (int c = 0; c < BOARD_SIZE; c++) {
+                    int idx = board_index(r, c);
+                    if (play_board[idx] == play_player && count_liberties_on(play_board, r, c, play_player) == 1) {
                         int lr, lc;
-                        find_liberty(play_board, nr, nc, &lr, &lc);
+                        find_liberty(play_board, r, c, &lr, &lc);
                         if (lr != -1) {
                             for (int m = 0; m < move_count; m++) {
                                 if (playout_move_rows[m] == lr && playout_move_cols[m] == lc) {
@@ -324,20 +322,20 @@ static int mcts_playout(uint8_t initial_player) {
                             }
                         }
                     }
+                    if (move_idx >= 0) break;
                 }
                 if (move_idx >= 0) break;
             }
         }
 
-        // Heuristic 2: Atari capture - if opponent's group has 1 liberty, capture it
-        if (move_idx < 0 && play_last_row != MCTS_PASS_ROW) {
-            for (int d = 0; d < 4; d++) {
-                int nr = play_last_row + dr4[d], nc = play_last_col + dc4[d];
-                int nidx = board_index(nr, nc);
-                if (nidx >= 0 && play_board[nidx] == opp) {
-                    if (count_liberties_on(play_board, nr, nc, opp) == 1) {
+        // Heuristic 2: Atari capture - if any of OPPONENT groups are in atari, capture them.
+        if (move_idx < 0) {
+            for (int r = 0; r < BOARD_SIZE; r++) {
+                for (int c = 0; c < BOARD_SIZE; c++) {
+                    int idx = board_index(r, c);
+                    if (play_board[idx] == opp && count_liberties_on(play_board, r, c, opp) == 1) {
                         int lr, lc;
-                        find_liberty(play_board, nr, nc, &lr, &lc);
+                        find_liberty(play_board, r, c, &lr, &lc);
                         if (lr != -1) {
                             for (int m = 0; m < move_count; m++) {
                                 if (playout_move_rows[m] == lr && playout_move_cols[m] == lc) {
@@ -346,6 +344,7 @@ static int mcts_playout(uint8_t initial_player) {
                             }
                         }
                     }
+                    if (move_idx >= 0) break;
                 }
                 if (move_idx >= 0) break;
             }

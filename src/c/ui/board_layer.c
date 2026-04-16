@@ -35,7 +35,7 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row, int 
                       (game_mode == MODE_AI_AI));
         snprintf(left_text, sizeof(left_text), "%s %s",
             (current_player == BLACK ? "Black" : "White"),
-            is_ai ? "thinking" : "to move");
+            is_ai ? "is thinking" : "to move");
     }
     graphics_draw_text(ctx, left_text, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
         GRect(5, 2, 120, 20), GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
