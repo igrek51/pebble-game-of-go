@@ -146,7 +146,7 @@ static void ai_move_callback(void *data) {
     }
 
     // First move D5
-    if (current_player == BLACK && last_row == 4 && last_col == 4 && get_stone(4, 3) == EMPTY) {
+    if (current_player == BLACK && get_stone(4, 3) == EMPTY) {
         try_place_stone_ui(4, 3);
     } else {
         mcts_run(MCTS_ITERATIONS, current_player, last_row, last_col, consecutive_passes);

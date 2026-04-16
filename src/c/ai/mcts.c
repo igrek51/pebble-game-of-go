@@ -32,7 +32,6 @@ static uint16_t mcts_path[200];
 static int mcts_path_len;
 
 // Temporary board arrays
-static uint8_t legal_temp_b[BOARD_SIZE * BOARD_SIZE];
 static uint8_t sim_temp_b[BOARD_SIZE * BOARD_SIZE];
 static uint8_t playout_move_rows[82];
 static uint8_t playout_move_cols[82];
@@ -87,6 +86,7 @@ static int32_t mcts_uct(uint16_t child_idx, uint16_t parent_visits) {
 // Get legal moves for a board
 static int get_legal_moves_on(uint8_t *b, uint8_t *ko_b, bool ko_active,
                                 uint8_t player, uint8_t *move_rows, uint8_t *move_cols) {
+    (void)ko_b;
     uint8_t opponent = (player == BLACK) ? WHITE : BLACK;
     int count = 0;
 

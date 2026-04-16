@@ -1,2 +1,5 @@
 /build
 .lock-waf_linux_build
+tests/test_ai
+tests/test_board
+tests/test_match
