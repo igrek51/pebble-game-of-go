@@ -7,10 +7,9 @@
 - ✓ Add pass mechanic & menu system - long-press SELECT to open menu with PASS/NEW GAME options
 - ✓ Improve UI (row/column labels, status display) - coordinates, hoshi dots, status bar with player
 - ✓ Add message / dialog UI mechanic - Ko message dialog, game over dialog, error dialog for occupied cells
+- Add unit tests for some important, critical parts, like AI strategy.
 
 ## Future Improvements
 - Make sure the current implementation of AI algorithm is on par with the Monte Carlo Search Tree described in ai_strategy.md
-- Split the code in src/c/main.c into multiple files, logically separate.
-- Add unit tests for some important, critical parts, like AI strategy.
-- Establish a reliable way for testing the app stability, correctness, compilation errors, without running it actually on emulator, but just compiling it and running tests. Of course, emulator and screenshots is final test.
-- tests are only testing board, which is almost nothing. Also , run some sanity checks / smoke tests verifying AI algotithm. For instance, try to play the match to the very end, between 2 AI opponnents. Make sure the results makes sense more or less, and it doesn't crash.
+
+- I feel like the AI strategy is stupid, putting it bluntly. Sometimes it plays in the corner, out of blue, which is considered a worst move. Verify if everything is correct with the algorithm and it's on par with general design @docs/ai_strategy.md. For instance, it should prioritize escaping atari, and capturing, but I'm pretty sure it's not doing it. You can allocate more resources, more time, more search depth, iterations, etc. to the algorithm. So far it's quite fast, we can improve it at slight cost of the time.

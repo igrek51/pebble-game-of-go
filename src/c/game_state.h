@@ -20,6 +20,7 @@ typedef enum {
 
 extern uint8_t current_player;
 extern int consecutive_passes;
+extern int moves_made;
 extern int black_score;
 extern int white_score;
 extern UIState ui_state;

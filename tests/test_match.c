@@ -49,6 +49,7 @@ bool simulate_place_stone(int row, int col) {
 
     memcpy(ko_board, temp_board, sizeof(board));
     ko_active = any_captured;
+    moves_made++;
     consecutive_passes = 0;
     current_player = opponent;
     return true;
@@ -64,27 +65,30 @@ void test_full_match() {
     int last_r = 4, last_c = 4;
 
     while (consecutive_passes < 2 && turns < turn_limit) {
-        mcts_run(20, current_player, last_r, last_c, consecutive_passes);
-        uint16_t best = mcts_get_best_move();
-        
-        if (best == MCTS_NO_NODE) {
-            consecutive_passes++;
-            current_player = (current_player == BLACK) ? WHITE : BLACK;
+        if (moves_made == 0 && current_player == BLACK && get_stone(4, 3) == EMPTY) {
+            simulate_place_stone(4, 3);
+            last_r = 4; last_c = 3;
         } else {
-            int r, c;
-            mcts_get_move_coords(best, &r, &c);
-            if (r == MCTS_PASS_ROW && c == MCTS_PASS_COL) {
+            mcts_run(20, current_player, last_r, last_c, consecutive_passes);
+            uint16_t best = mcts_get_best_move();
+            
+            if (best == MCTS_NO_NODE) {
                 consecutive_passes++;
                 current_player = (current_player == BLACK) ? WHITE : BLACK;
             } else {
-                bool ok = simulate_place_stone(r, c);
-                if (ok) {
-                    last_r = r; last_c = c;
-                } else {
-                    // AI picked illegal move? Should not happen often with MCTS
-                    // but we must handle it to prevent infinite loop
+                int r, c;
+                mcts_get_move_coords(best, &r, &c);
+                if (r == MCTS_PASS_ROW && c == MCTS_PASS_COL) {
                     consecutive_passes++;
                     current_player = (current_player == BLACK) ? WHITE : BLACK;
+                } else {
+                    bool ok = simulate_place_stone(r, c);
+                    if (ok) {
+                        last_r = r; last_c = c;
+                    } else {
+                        consecutive_passes++;
+                        current_player = (current_player == BLACK) ? WHITE : BLACK;
+                    }
                 }
             }
         }

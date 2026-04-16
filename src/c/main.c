@@ -118,6 +118,7 @@ static bool try_place_stone_ui(int row, int col) {
     memcpy(ko_board, temp_board, sizeof(board));
     ko_active = any_captured;
 
+    moves_made++;
     last_row = row;
     last_col = col;
     consecutive_passes = 0;
@@ -145,8 +146,8 @@ static void ai_move_callback(void *data) {
         return;
     }
 
-    // First move D5
-    if (current_player == BLACK && get_stone(4, 3) == EMPTY) {
+    // First move D5 (only if no moves made yet)
+    if (moves_made == 0 && current_player == BLACK && get_stone(4, 3) == EMPTY) {
         try_place_stone_ui(4, 3);
     } else {
         mcts_run(MCTS_ITERATIONS, current_player, last_row, last_col, consecutive_passes);

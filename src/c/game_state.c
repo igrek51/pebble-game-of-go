@@ -4,6 +4,7 @@
 
 uint8_t current_player = BLACK;
 int consecutive_passes = 0;
+int moves_made = 0;
 int black_score = 0;
 int white_score = 0;
 UIState ui_state = VIEW;
@@ -15,6 +16,7 @@ void init_board_logic(void) {
     current_player = BLACK;
     ko_active = false;
     consecutive_passes = 0;
+    moves_made = 0;
     black_score = 0;
     white_score = 0;
     ui_state = VIEW;
