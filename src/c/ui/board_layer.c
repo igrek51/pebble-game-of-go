@@ -28,7 +28,7 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row, int 
 
     char left_text[32];
     if (ui_state == GAME_OVER_STATE) {
-        snprintf(left_text, sizeof(left_text), "GAME OVER");
+        snprintf(left_text, sizeof(left_text), "%s", (black_score > white_score) ? "Black won" : "White won");
     } else {
         snprintf(left_text, sizeof(left_text), "%s to move",
             current_player == BLACK ? "Black" : "White");
@@ -36,14 +36,17 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row, int 
     graphics_draw_text(ctx, left_text, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
         GRect(5, 2, 120, 20), GTextOverflowModeWordWrap, GTextAlignmentLeft, NULL);
 
-    if (ui_state != GAME_OVER_STATE) {
+    char right_text[32];
+    if (ui_state == GAME_OVER_STATE) {
+        int diff = (black_score > white_score) ? (black_score - white_score) : (white_score - black_score);
+        snprintf(right_text, sizeof(right_text), "%c%d.0", (black_score >= white_score ? 'B' : 'W'), diff);
+    } else {
         int diff_10x = estimate_score_10x_logic();
         int abs_diff_10x = diff_10x < 0 ? -diff_10x : diff_10x;
-        char right_text[32];
         snprintf(right_text, sizeof(right_text), "B%c%d.%d", (diff_10x >= 0 ? '+' : '-'), abs_diff_10x / 10, abs_diff_10x % 10);
-        graphics_draw_text(ctx, right_text, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
-            GRect(120, 2, 75, 20), GTextOverflowModeWordWrap, GTextAlignmentRight, NULL);
     }
+    graphics_draw_text(ctx, right_text, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+        GRect(120, 2, 75, 20), GTextOverflowModeWordWrap, GTextAlignmentRight, NULL);
 
     // Board background
     graphics_context_set_stroke_color(ctx, COLOR_GRID);
@@ -87,7 +90,7 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row, int 
         char label[2];
         snprintf(label, sizeof(label), "%d", BOARD_SIZE - row);
         graphics_draw_text(ctx, label, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
-            GRect(5, BOARD_ORIGIN_Y + row * CELL_SIZE - 10, 10, 14),
+            GRect(3, BOARD_ORIGIN_Y + row * CELL_SIZE - 9, 10, 14),
             GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
     }
 

@@ -23,3 +23,6 @@
 #define MCTS_MAX_PLAYOUT 120
 ```
 
+- Let's change the UI slightly. After the game ends, and the dialog is canceled. Show on the to bar the text "Black won" or "White won" and then also show the actual final score on the top right, like "B+0.5" (Black won by 0.5 points). Additionally, when an AI passed or human player passed, show the dismissable message dialog "Black passed", or "White passed".
+
+- when playing against AI, and it's a move of AI, show on top "White thinking" or "Black thinking".

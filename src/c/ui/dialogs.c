@@ -71,8 +71,7 @@ void show_dialog(const char *message) {
     });
     window_set_click_config_provider(s_dialog_window, dialog_click_config);
     window_stack_push(s_dialog_window, true);
-    if (s_dialog_timer) app_timer_cancel(s_dialog_timer);
-    s_dialog_timer = app_timer_register(3000, (AppTimerCallback)hide_dialog, NULL);
+    // Remove auto-dismiss timer so it stays until dismissed manually
 }
 
 void show_ko_dialog(const char *message) {

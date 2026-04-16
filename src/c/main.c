@@ -53,6 +53,7 @@ static void init_board_full(void) {
     }
 }
 
+// Pass action
 static void do_pass_ui(void) {
     consecutive_passes++;
     ko_active = false;
