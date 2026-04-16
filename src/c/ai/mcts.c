@@ -101,7 +101,7 @@ static int32_t mcts_uct(uint16_t child_idx, uint16_t parent_visits) {
     if (parent_visits == 0) return 999999;
 
     int32_t exploit = ((int32_t)node->wins * 1000) / (int32_t)node->visits;
-    
+
     // exploration = C * sqrt(ln(Np)/N) = (C * sqrt(ln(Np))) / sqrt(N)
     uint32_t numerator = 0;
     if (parent_visits < 200) {
@@ -129,13 +129,13 @@ static int32_t mcts_uct(uint16_t child_idx, uint16_t parent_visits) {
     else root_n = 14;
 
     int32_t explore = numerator / root_n;
-    
+
     return exploit + explore;
 }
 
 // Get legal moves for a board
 static int get_legal_moves_on(uint8_t *b, uint8_t *ko_b, bool ko_active,
-                                uint8_t player, uint8_t *move_rows, uint8_t *move_cols) {
+uint8_t player, uint8_t *move_rows, uint8_t *move_cols) {
     (void)ko_b;
     uint8_t opponent = (player == BLACK) ? WHITE : BLACK;
     int count = 0;
@@ -151,7 +151,7 @@ static int get_legal_moves_on(uint8_t *b, uint8_t *ko_b, bool ko_active,
             // Check captures and suicide
             bool legal = true;
             bool any_captured = false;
-            
+
             // Check captures of opponent
             const int dr[] = {-1, 1, 0, 0};
             const int dc[] = {0, 0, -1, 1};
@@ -161,7 +161,7 @@ static int get_legal_moves_on(uint8_t *b, uint8_t *ko_b, bool ko_active,
                 if (nidx >= 0 && b[nidx] == opponent) {
                     if (count_liberties_on(b, nr, nc, opponent) == 0) {
                         any_captured = true;
-                        // We don't actually remove them here to keep it fast, 
+                        // We don't actually remove them here to keep it fast,
                         // but we need to know if any WERE captured for Ko check
                     }
                 }
@@ -212,7 +212,7 @@ static int get_legal_moves_on(uint8_t *b, uint8_t *ko_b, bool ko_active,
 
 // Try to place stone on given board
 static bool sim_try_place(uint8_t *b, uint8_t *ko_b, bool *ko_active,
-                           uint8_t player, int row, int col) {
+uint8_t player, int row, int col) {
     if (row == MCTS_PASS_ROW && col == MCTS_PASS_COL) {
         return true;
     }
@@ -300,7 +300,7 @@ static int mcts_playout(uint8_t initial_player) {
 
     while (playout_moves < MCTS_MAX_PLAYOUT) {
         int move_count = get_legal_moves_on(play_board, play_ko_board, play_ko_active,
-                                         play_player, playout_move_rows, playout_move_cols);
+        play_player, playout_move_rows, playout_move_cols);
 
         if (move_count == 0) break;
 
@@ -358,14 +358,14 @@ static int mcts_playout(uint8_t initial_player) {
                 int score = (mcts_rng() % 10); // Jitter
                 if (playout_move_rows[i] != MCTS_PASS_ROW) {
                     // Distance to last move (Manhattan)
-                    int dist = abs((int)playout_move_rows[i] - play_last_row) + 
-                               abs((int)playout_move_cols[i] - play_last_col);
+                    int dist = abs((int)playout_move_rows[i] - play_last_row) +
+                    abs((int)playout_move_cols[i] - play_last_col);
                     if (dist <= 2) score += 20;
                     else if (dist <= 4) score += 10;
-                    
+
                     // Penalty for 1st line (edge) moves if far from last move
                     if ((playout_move_rows[i] == 0 || playout_move_rows[i] == 8 ||
-                         playout_move_cols[i] == 0 || playout_move_cols[i] == 8) && dist > 2) {
+                    playout_move_cols[i] == 0 || playout_move_cols[i] == 8) && dist > 2) {
                         score -= 15;
                     }
                 }
@@ -442,7 +442,7 @@ void mcts_run(int iterations, uint8_t current_player, int last_row, int last_col
             } else {
                 sim_passes = 0;
                 sim_try_place(sim_board, sim_ko_board, &sim_ko_active, sim_player,
-                              bc->move_row, bc->move_col);
+                bc->move_row, bc->move_col);
                 sim_last_row = bc->move_row;
                 sim_last_col = bc->move_col;
             }
@@ -455,7 +455,7 @@ void mcts_run(int iterations, uint8_t current_player, int last_row, int last_col
         MCTSNode *leaf = &mcts_pool[node];
         uint8_t move_rows[82], move_cols[82];
         int legal_move_count = get_legal_moves_on(sim_board, sim_ko_board, sim_ko_active,
-                                                   sim_player, move_rows, move_cols);
+        sim_player, move_rows, move_cols);
 
         int unexpanded_idx = -1;
         for (int m = 0; m < legal_move_count; m++) {
@@ -477,7 +477,7 @@ void mcts_run(int iterations, uint8_t current_player, int last_row, int last_col
 
         if (unexpanded_idx >= 0) {
             uint16_t new_child = mcts_alloc(move_rows[unexpanded_idx], move_cols[unexpanded_idx],
-                                             sim_player);
+            sim_player);
             if (new_child != MCTS_NO_NODE) {
                 if (leaf->first_child_idx == MCTS_NO_NODE) {
                     leaf->first_child_idx = new_child;
@@ -494,7 +494,7 @@ void mcts_run(int iterations, uint8_t current_player, int last_row, int last_col
                 } else {
                     sim_passes = 0;
                     sim_try_place(sim_board, sim_ko_board, &sim_ko_active, sim_player,
-                                  move_rows[unexpanded_idx], move_cols[unexpanded_idx]);
+                    move_rows[unexpanded_idx], move_cols[unexpanded_idx]);
                     sim_last_row = move_rows[unexpanded_idx];
                     sim_last_col = move_cols[unexpanded_idx];
                 }
@@ -584,8 +584,7 @@ int estimate_score_10x_logic(void) {
             int white_value = (min_white_dist <= 0) ? 10 : (10 - (min_white_dist - 1));
 
             if (black_value < 2) black_value = 2;
-            if (white_value < 2) white_value = 2;
-
+            // Assign territory based on nearest stone (weighted by distance)
             if (min_black_dist < min_white_dist) {
                 black_territory_10x += black_value;
             } else if (min_white_dist < min_black_dist) {
@@ -593,6 +592,10 @@ int estimate_score_10x_logic(void) {
             }
         }
     }
+
+    // Round to nearest 10
+    black_territory_10x = ((black_territory_10x + 5) / 10) * 10;
+    white_territory_10x = ((white_territory_10x + 5) / 10) * 10;
 
     int black_score_10x = (black_stones * 10) + black_territory_10x;
     int white_score_10x = (white_stones * 10) + white_territory_10x + 75;
@@ -604,7 +607,7 @@ void suggest_hint_logic(uint8_t current_player, int last_row, int last_col, int 
     // Run MCTS search to find the best move
     mcts_run(MCTS_ITERATIONS, current_player, last_row, last_col, 0);
     uint16_t best_node = mcts_get_best_move();
-    
+
     if (best_node == MCTS_NO_NODE) {
         *best_row = -1;
         *best_col = -1;

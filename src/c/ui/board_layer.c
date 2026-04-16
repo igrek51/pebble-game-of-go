@@ -42,8 +42,10 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row, int 
 
     char right_text[32];
     if (ui_state == GAME_OVER_STATE) {
-        int diff = (black_score > white_score) ? (black_score - white_score) : (white_score - black_score);
-        snprintf(right_text, sizeof(right_text), "%c%d.0", (black_score >= white_score ? 'B' : 'W'), diff);
+        int diff_10x = (black_score * 10) - (white_score * 10 + 75);
+        int abs_diff_10x = diff_10x < 0 ? -diff_10x : diff_10x;
+        
+        snprintf(right_text, sizeof(right_text), "%c%d.5", (diff_10x >= 0 ? 'B' : 'W'), abs_diff_10x / 10);
     } else {
         int diff_10x = estimate_score_10x_logic();
         int abs_diff_10x = diff_10x < 0 ? -diff_10x : diff_10x;
