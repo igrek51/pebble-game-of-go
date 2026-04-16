@@ -13,3 +13,4 @@
 - Split the code in src/c/main.c into multiple files, logically separate.
 - Add unit tests for some important, critical parts, like AI strategy.
 - Establish a reliable way for testing the app stability, correctness, compilation errors, without running it actually on emulator, but just compiling it and running tests. Of course, emulator and screenshots is final test.
+- tests are only testing board, which is almost nothing. Also , run some sanity checks / smoke tests verifying AI algotithm. For instance, try to play the match to the very end, between 2 AI opponnents. Make sure the results makes sense more or less, and it doesn't crash.

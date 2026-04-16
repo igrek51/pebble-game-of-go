@@ -389,7 +389,15 @@ Tested on 2026-04-12 with the following verified outcomes:
 4. **No persistent storage** — emulator state resets on restart
 5. **Single-instance only** — can't run multiple emulator versions simultaneously
 
----
+## Useful commands
+```
+pebble kill # Kills running emulators, if any.
+pebble wipe # Wipes data for running emulators. By default, only clears data for the current SDK version.
+pebble install --emulator emery # Installs the given app on the watch.
+pebble screenshot # Takes a screenshot from the watch.
+
+pebble --help # see other useful commands
+```
 
 ## References
 
