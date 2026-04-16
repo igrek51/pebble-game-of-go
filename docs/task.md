@@ -17,3 +17,5 @@
 - I feel like the AI strategy is very stupid. Sometimes it plays in the corner, out of blue, which is considered a worst move. Verify if everything is correct with the algorithm and it's on par with general design @docs/ai_strategy.md. For instance, it should prioritize escaping atari, and capturing, but I'm pretty sure it's not doing it. You can allocate more resources, more time, more search depth, iterations, etc. to the algorithm. So far it's quite fast, we can improve it at slight cost of the time.
 
 - Can you improve the current score assessment? How is it evaluated? I don't like that it says impossible outcomes like B+4.6. It should always round up to nearest 0.5 (but ending with .0 is impossible due to Komi). 
+
+- Take into account dead stones when caclulating score estimate - whether live or final score. Dead stones are not counted and are treated as opponent's area.

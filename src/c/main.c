@@ -331,9 +331,9 @@ static void show_mode_select(void) {
         static SimpleMenuItem items[4];
         items[0] = (SimpleMenuItem){.title = "Player vs Player",
                                     .callback = mode_select_callback};
-        items[1] = (SimpleMenuItem){.title = "Black vs AI",
+        items[1] = (SimpleMenuItem){.title = "Black vs White AI",
                                     .callback = mode_select_callback};
-        items[2] = (SimpleMenuItem){.title = "White vs AI",
+        items[2] = (SimpleMenuItem){.title = "White vs Black AI",
                                     .callback = mode_select_callback};
         items[3] = (SimpleMenuItem){.title = "AI vs AI",
                                     .callback = mode_select_callback};

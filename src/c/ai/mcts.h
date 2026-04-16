@@ -23,7 +23,7 @@ typedef struct {
 #define MCTS_NO_NODE 0xFFFF
 #define MCTS_PASS_ROW 9
 #define MCTS_PASS_COL 9
-#define MCTS_ITERATIONS 100
+#define MCTS_ITERATIONS 20
 #define MCTS_MAX_PLAYOUT 120
 
 // AI functions

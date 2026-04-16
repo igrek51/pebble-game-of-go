@@ -13,8 +13,8 @@ typedef enum {
 
 typedef enum {
     MODE_PVP,
-    MODE_BLACK_AI,
-    MODE_WHITE_AI,
+    MODE_WHITE_AI, // Black vs AI
+    MODE_BLACK_AI, // White vs AI
     MODE_AI_AI
 } GameMode;
 
