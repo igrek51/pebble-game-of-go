@@ -6,11 +6,13 @@
 
 void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
                              int selected_col) {
-    // Clear background
-    graphics_context_set_fill_color(ctx, COLOR_BG);
-    graphics_fill_rect(ctx, layer_get_bounds(layer), 0, GCornerNone);
+    GRect bounds = layer_get_bounds(layer);
+    int width = bounds.size.w;
+    int height = bounds.size.h;
 
-    // Draw status bar
+    graphics_context_set_fill_color(ctx, COLOR_BG);
+    graphics_fill_rect(ctx, bounds, 0, GCornerNone);
+
     GColor status_bg_color, status_text_color;
     if (ui_state == GAME_OVER_STATE) {
         status_bg_color = GColorBlue;
@@ -24,7 +26,7 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
     }
 
     graphics_context_set_fill_color(ctx, status_bg_color);
-    graphics_fill_rect(ctx, GRect(0, 0, 200, 20), 0, GCornerNone);
+    graphics_fill_rect(ctx, GRect(0, 0, width, 20), 0, GCornerNone);
     graphics_context_set_text_color(ctx, status_text_color);
 
     char left_text[32];
@@ -60,7 +62,7 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
     }
     graphics_draw_text(ctx, right_text,
                        fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
-                       GRect(120, 2, 75, 20), GTextOverflowModeWordWrap,
+                       GRect(width - 80, 2, 75, 20), GTextOverflowModeWordWrap,
                        GTextAlignmentRight, NULL);
 
     // Board background
@@ -69,7 +71,7 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
     graphics_fill_rect(ctx,
                        GRect(BOARD_ORIGIN_X - 1, BOARD_ORIGIN_Y - 1,
                              BOARD_SIZE * CELL_SIZE + 2,
-                             228 - (BOARD_ORIGIN_Y - 1)),
+                             height - (BOARD_ORIGIN_Y - 1)),
                        0, GCornerNone);
 
     if (ui_state == SELECTING_ROW) {

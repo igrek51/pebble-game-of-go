@@ -5,10 +5,17 @@
 #include "../game_state.h"
 #include "../ai/mcts.h"
 
+#ifdef PBL_PLATFORM_GABBRO
+#define CELL_SIZE 19
+#define STONE_RADIUS 7
+#define BOARD_ORIGIN_X 31
+#define BOARD_ORIGIN_Y 57
+#else
 #define CELL_SIZE 19
 #define STONE_RADIUS 6
 #define BOARD_ORIGIN_X 22
 #define BOARD_ORIGIN_Y 48
+#endif
 #define MENU_ROW 9
 
 // Colors

@@ -14,7 +14,7 @@
     "uuid": "cd392e7c-4f8a-4b2e-9d1f-8c7ade6d9e2f",
     "sdkVersion": "3",
     "projectType": "native",
-    "targetPlatforms": ["emery"],
+    "targetPlatforms": ["emery", "gabbro"],
     "watchapp": {
       "watchface": false
     },
