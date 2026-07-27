@@ -1,5 +1,6 @@
 .PHONY: help build clean install screenshot logs start-emulator stop-emulator setup 2x test status kill match
 
+NAME := pebble-game-of-go
 PHONE_IP := 192.168.0.37
 
 setup:
@@ -40,7 +41,7 @@ match: install
 build:
 	@echo "Building Game of Go..."
 	pebble build
-	@echo "✓ Build complete: build/go-game.pbw"
+	@echo "✓ Build complete: build/$(NAME).pbw"
 
 install: build
 	@echo "Installing on emulator..."
@@ -64,7 +65,7 @@ live-logs:
 
 deploy: build
 	@echo "Deploying to phone ($(PHONE_IP))..."
-	pebble install --phone $(PHONE_IP) build/go-game.pbw
+	pebble install --phone $(PHONE_IP) build/$(NAME).pbw
 
 clean:
 	@echo "Cleaning build artifacts..."

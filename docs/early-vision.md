@@ -92,7 +92,7 @@ cd go-game
 pebble build
 ```
 
-This generates `build/go-game.pbw` (23 KB).
+This generates `build/pebble-game-of-go.pbw` (23 KB).
 
 ### Install on Pebble Time 2
 ```bash

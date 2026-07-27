@@ -68,4 +68,4 @@ pebble logs --emulator emery > /tmp/pebble-logs.txt 2>&1 &
 ## Working with Files
 
 - **Screenshots:** Read PNG files with the Read tool (you have multimodal capability)
-- **Build:** `pebble build` → `build/go-game.pbw`
+- **Build:** `pebble build` → `build/pebble-game-of-go.pbw`
