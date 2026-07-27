@@ -47,6 +47,7 @@ install: build
 	@echo "Installing on emulator..."
 	@bash scripts/run-emu.sh
 	@echo "✓ Installed on emulator"
+run: install
 
 test:
 	@$(MAKE) -C tests run

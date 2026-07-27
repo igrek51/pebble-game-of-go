@@ -14,7 +14,7 @@
 #else
 #define CELL_SIZE 21
 #define STONE_RADIUS 8
-#define BOARD_ORIGIN_X 15
+#define BOARD_ORIGIN_X 18
 #define BOARD_ORIGIN_Y 46
 #define COL_LABEL_Y_OFFSET 20
 #endif
