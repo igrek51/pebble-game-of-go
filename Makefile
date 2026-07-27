@@ -1,23 +1,6 @@
 .PHONY: help build clean install screenshot logs start-emulator stop-emulator setup 2x test status kill match
 
-help:
-	@echo "Game of Go - Pebble Time 2 (Emery)"
-	@echo ""
-	@echo "Available commands:"
-	@echo "  make setup             - Set up Pebble SDK (run once)"
-	@echo "  make start-emulator    - Start QEMU emulator in background"
-	@echo "  make 2x                - Make emulator with 2x scaling"
-	@echo "  make status            - Check if emulator is running"
-	@echo "  make stop-emulator     - Stop emulator"
-	@echo "  make kill              - Force kill all pebble/qemu processes"
-	@echo "  make build             - Build the app (PBW)"
-	@echo "  make install           - Build and install on emulator"
-	@echo "  make test              - Run native unit tests"
-	@echo "  make match             - Run AI vs AI smoke test (requires running emulator)"
-	@echo "  make screenshot        - Capture screenshot from emulator"
-	@echo "  make logs              - View emulator logs"
-	@echo "  make clean             - Remove build artifacts"
-	@echo ""
+PHONE_IP := 192.168.0.37
 
 setup:
 	@echo "Setting up Pebble SDK..."
@@ -59,9 +42,9 @@ build:
 	pebble build
 	@echo "✓ Build complete: build/go-game.pbw"
 
-install: build start-emulator
+install: build
 	@echo "Installing on emulator..."
-	pebble install --emulator emery
+	@bash scripts/run-emu.sh
 	@echo "✓ Installed on emulator"
 
 test:

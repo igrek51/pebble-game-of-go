@@ -10,17 +10,19 @@
 #define STONE_RADIUS 7
 #define BOARD_ORIGIN_X 31
 #define BOARD_ORIGIN_Y 57
+#define COL_LABEL_Y_OFFSET 25
 #else
-#define CELL_SIZE 19
-#define STONE_RADIUS 6
-#define BOARD_ORIGIN_X 22
-#define BOARD_ORIGIN_Y 48
+#define CELL_SIZE 21
+#define STONE_RADIUS 8
+#define BOARD_ORIGIN_X 15
+#define BOARD_ORIGIN_Y 46
+#define COL_LABEL_Y_OFFSET 20
 #endif
 #define MENU_ROW 9
 
 // Colors
 #define COLOR_BOARD GColorChromeYellow
-#define COLOR_GRID GColorDarkGray
+#define COLOR_GRID GColorBlack
 #define COLOR_BLACK_STONE GColorBlack
 #define COLOR_WHITE_STONE GColorWhite
 #define COLOR_CURSOR_COL GColorWhite

@@ -115,7 +115,7 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
         char label[2] = {col_labels[col], '\0'};
         graphics_draw_text(
             ctx, label, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
-            GRect(BOARD_ORIGIN_X + col * CELL_SIZE - 6, BOARD_ORIGIN_Y - 25, 12,
+            GRect(BOARD_ORIGIN_X + col * CELL_SIZE - 6, BOARD_ORIGIN_Y - COL_LABEL_Y_OFFSET, 12,
                   14),
             GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
     }
@@ -124,7 +124,7 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
         snprintf(label, sizeof(label), "%d", BOARD_SIZE - row);
         graphics_draw_text(
             ctx, label, fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
-            GRect(3, BOARD_ORIGIN_Y + row * CELL_SIZE - 9, 10, 14),
+            GRect(1, BOARD_ORIGIN_Y + row * CELL_SIZE - 9, 10, 14),
             GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
     }
 
