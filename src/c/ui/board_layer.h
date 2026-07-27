@@ -25,8 +25,8 @@
 #define COLOR_GRID GColorBlack
 #define COLOR_BLACK_STONE GColorBlack
 #define COLOR_WHITE_STONE GColorWhite
-#define COLOR_CURSOR_COL GColorWhite
-#define COLOR_HIGHLIGHT GColorWhite
+#define COLOR_CURSOR_COL GColorIcterine
+#define COLOR_HIGHLIGHT GColorIcterine
 #define COLOR_BG GColorChromeYellow
 
 void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row, int selected_col);

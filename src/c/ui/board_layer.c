@@ -26,7 +26,7 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
     }
 
     graphics_context_set_fill_color(ctx, status_bg_color);
-    graphics_fill_rect(ctx, GRect(0, 0, width, 20), 0, GCornerNone);
+    graphics_fill_rect(ctx, GRect(0, 0, width, 25), 0, GCornerNone);
     graphics_context_set_text_color(ctx, status_text_color);
 
     char left_text[32];
@@ -42,9 +42,9 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
                  is_ai ? "is thinking" : "to move");
     }
     graphics_draw_text(ctx, left_text,
-                       fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
-                       GRect(5, 2, 120, 20), GTextOverflowModeWordWrap,
-                       GTextAlignmentLeft, NULL);
+                       fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                        GRect(5, 0, 120, 20), GTextOverflowModeWordWrap,
+                        GTextAlignmentLeft, NULL);
 
     char right_text[32];
     if (ui_state == GAME_OVER_STATE) {
@@ -61,8 +61,8 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
                  abs_diff_10x % 10);
     }
     graphics_draw_text(ctx, right_text,
-                       fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
-                       GRect(width - 80, 2, 75, 20), GTextOverflowModeWordWrap,
+                       fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                        GRect(width - 80, 0, 75, 20), GTextOverflowModeWordWrap,
                        GTextAlignmentRight, NULL);
 
     // Board background
@@ -79,8 +79,8 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
         graphics_context_set_fill_color(ctx, COLOR_HIGHLIGHT);
         graphics_fill_rect(
             ctx,
-            GRect(BOARD_ORIGIN_X - CELL_SIZE / 2, row_y - CELL_SIZE / 2,
-                  BOARD_SIZE * CELL_SIZE + CELL_SIZE / 2, CELL_SIZE),
+            GRect(BOARD_ORIGIN_X - CELL_SIZE, row_y - CELL_SIZE / 2,
+                  BOARD_SIZE * CELL_SIZE + CELL_SIZE, CELL_SIZE),
             0, GCornerNone);
     }
 
