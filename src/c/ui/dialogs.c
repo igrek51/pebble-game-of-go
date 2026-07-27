@@ -151,11 +151,10 @@ static void scroll_dialog_window_unload(Window *window) {
         scroll_layer_destroy(s_scroll_layer);
         s_scroll_layer = NULL;
     }
-}
-
-static void scroll_dialog_click_config(void *context) {
-    window_single_click_subscribe(BUTTON_ID_BACK,
-                                  (ClickHandler)hide_scroll_dialog);
+    window_destroy(window);
+    s_scroll_dialog_window = NULL;
+    if (s_canvas_layer)
+        layer_mark_dirty(s_canvas_layer);
 }
 
 void show_scroll_dialog(const char *message) {
@@ -168,19 +167,7 @@ void show_scroll_dialog(const char *message) {
                                    .load = scroll_dialog_window_load,
                                    .unload = scroll_dialog_window_unload,
                                });
-    window_set_click_config_provider(s_scroll_dialog_window,
-                                     scroll_dialog_click_config);
     window_stack_push(s_scroll_dialog_window, true);
-}
-
-void hide_scroll_dialog(void) {
-    if (!s_scroll_dialog_window)
-        return;
-    window_stack_remove(s_scroll_dialog_window, true);
-    window_destroy(s_scroll_dialog_window);
-    s_scroll_dialog_window = NULL;
-    if (s_canvas_layer)
-        layer_mark_dirty(s_canvas_layer);
 }
 
 // Game Over Dialog

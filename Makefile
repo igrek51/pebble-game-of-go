@@ -59,6 +59,13 @@ logs:
 	@echo "Fetching emulator logs (Ctrl+C to stop)..."
 	pebble logs --emulator emery
 
+live-logs:
+	pebble logs --phone $(PHONE_IP)
+
+deploy: build
+	@echo "Deploying to phone ($(PHONE_IP))..."
+	pebble install --phone $(PHONE_IP) build/go-game.pbw
+
 clean:
 	@echo "Cleaning build artifacts..."
 	rm -rf build/

@@ -10,7 +10,6 @@ void show_ko_dialog(const char *message);
 void hide_dialog(void);
 
 void show_scroll_dialog(const char *message);
-void hide_scroll_dialog(void);
 
 void show_gameover_dialog(void (*on_dismiss)(void));
 void hide_gameover_dialog(void);
