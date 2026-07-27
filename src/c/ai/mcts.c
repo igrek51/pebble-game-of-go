@@ -271,6 +271,37 @@ static bool sim_try_place(uint8_t *b, uint8_t *ko_b, bool *ko_active,
     return true;
 }
 
+// Check if move at (r,c) by player captures any opponent stone in atari
+static bool would_capture_atari(uint8_t *b, int r, int c, uint8_t player) {
+    uint8_t opp = (player == BLACK) ? WHITE : BLACK;
+    const int dr[] = {-1, 1, 0, 0};
+    const int dc[] = {0, 0, -1, 1};
+    for (int d = 0; d < 4; d++) {
+        int nr = r + dr[d], nc = c + dc[d];
+        int nidx = board_index(nr, nc);
+        if (nidx >= 0 && b[nidx] == opp &&
+            count_liberties_on(b, nr, nc, opp) == 1) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// Check if move at (r,c) by player connects to/extends own group in atari
+static bool would_escape_atari(uint8_t *b, int r, int c, uint8_t player) {
+    const int dr[] = {-1, 1, 0, 0};
+    const int dc[] = {0, 0, -1, 1};
+    for (int d = 0; d < 4; d++) {
+        int nr = r + dr[d], nc = c + dc[d];
+        int nidx = board_index(nr, nc);
+        if (nidx >= 0 && b[nidx] == player &&
+            count_liberties_on(b, nr, nc, player) == 1) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Find the ONLY liberty of a group at (r, c)
 static void find_liberty(uint8_t *b, int r, int c, int *lr, int *lc) {
     uint8_t color = b[board_index(r, c)];
@@ -298,9 +329,8 @@ static void find_liberty(uint8_t *b, int r, int c, int *lr, int *lc) {
                 continue;
             if (b[nidx] == EMPTY) {
                 *lr = nr;
-                *lc = nc; // Found a liberty
-                          // Note: we continue to check if there are MORE
-                          // liberties
+                *lc = nc;
+                return;
             } else if (b[nidx] == color) {
                 visited[nidx] = true;
                 stack_r[top] = nr;
@@ -510,6 +540,8 @@ void mcts_run(int iterations, uint8_t current_player, int last_row,
                                sim_player, move_rows, move_cols);
 
         int unexpanded_idx = -1;
+        int atari_capture_idx = -1;
+        int atari_escape_idx = -1;
         for (int m = 0; m < legal_move_count; m++) {
             bool found = false;
             uint16_t child = leaf->first_child_idx;
@@ -523,9 +555,25 @@ void mcts_run(int iterations, uint8_t current_player, int last_row,
                 child = c->next_sibling_idx;
             }
             if (!found) {
-                unexpanded_idx = m;
-                break;
+                if (atari_capture_idx < 0 &&
+                    move_rows[m] != MCTS_PASS_ROW &&
+                    would_capture_atari(sim_board, move_rows[m], move_cols[m], sim_player)) {
+                    atari_capture_idx = m;
+                } else if (atari_escape_idx < 0 &&
+                           move_rows[m] != MCTS_PASS_ROW &&
+                           would_escape_atari(sim_board, move_rows[m], move_cols[m], sim_player)) {
+                    atari_escape_idx = m;
+                }
+                if (unexpanded_idx < 0) {
+                    unexpanded_idx = m;
+                }
             }
+        }
+
+        if (atari_capture_idx >= 0) {
+            unexpanded_idx = atari_capture_idx;
+        } else if (atari_escape_idx >= 0) {
+            unexpanded_idx = atari_escape_idx;
         }
 
         if (unexpanded_idx >= 0) {

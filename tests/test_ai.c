@@ -33,6 +33,91 @@ void test_mcts_basic_move() {
     ASSERT(c >= 0 && c < 9);
 }
 
+void test_atari_capture() {
+    printf("  Testing atari capture...\n");
+    init_board_logic();
+    mcts_init_zobrist();
+
+    // White stone at (3,3) in atari, only liberty at (2,3)
+    //   .  B  W  B
+    //   .  .  B  .
+    set_stone(3, 2, BLACK);
+    set_stone(3, 3, WHITE);
+    set_stone(3, 4, BLACK);
+    set_stone(4, 3, BLACK);
+
+    // Black to move, should capture at (2,3)
+    mcts_run(MCTS_ITERATIONS, BLACK, 3, 3, 0);
+    uint16_t best = mcts_get_best_move();
+    ASSERT(best != MCTS_NO_NODE);
+    int r, c;
+    mcts_get_move_coords(best, &r, &c);
+    printf("    Best move: (%d, %d)\n", r, c);
+    ASSERT(r == 2 && c == 3);
+}
+
+void test_atari_escape() {
+    printf("  Testing atari escape...\n");
+    init_board_logic();
+    mcts_init_zobrist();
+
+    // White stone at (3,3) in atari, only liberty at (2,3)
+    set_stone(3, 2, BLACK);
+    set_stone(3, 3, WHITE);
+    set_stone(3, 4, BLACK);
+    set_stone(4, 3, BLACK);
+
+    // White to move, should escape at (2,3)
+    mcts_run(MCTS_ITERATIONS, WHITE, 3, 3, 0);
+    uint16_t best = mcts_get_best_move();
+    ASSERT(best != MCTS_NO_NODE);
+    int r, c;
+    mcts_get_move_coords(best, &r, &c);
+    printf("    Best move: (%d, %d)\n", r, c);
+    ASSERT(r == 2 && c == 3);
+}
+
+void test_edge_atari_capture() {
+    printf("  Testing edge atari capture...\n");
+    init_board_logic();
+    mcts_init_zobrist();
+
+    // White stone at (0,0) corner in atari, only liberty at (1,0)
+    // W B . . .
+    // . B . . .
+    set_stone(0, 0, WHITE);
+    set_stone(0, 1, BLACK);
+    set_stone(1, 1, BLACK);
+
+    // Black to move, should capture at (1,0)
+    mcts_run(MCTS_ITERATIONS, BLACK, 0, 0, 0);
+    uint16_t best = mcts_get_best_move();
+    ASSERT(best != MCTS_NO_NODE);
+    int r, c;
+    mcts_get_move_coords(best, &r, &c);
+    printf("    Best move: (%d, %d)\n", r, c);
+    ASSERT(r == 1 && c == 0);
+}
+
+void test_edge_atari_escape() {
+    printf("  Testing edge atari escape...\n");
+    init_board_logic();
+    mcts_init_zobrist();
+
+    // Same position, but White to move should escape
+    set_stone(0, 0, WHITE);
+    set_stone(0, 1, BLACK);
+    set_stone(1, 1, BLACK);
+
+    mcts_run(MCTS_ITERATIONS, WHITE, 0, 0, 0);
+    uint16_t best = mcts_get_best_move();
+    ASSERT(best != MCTS_NO_NODE);
+    int r, c;
+    mcts_get_move_coords(best, &r, &c);
+    printf("    Best move: (%d, %d)\n", r, c);
+    ASSERT(r == 1 && c == 0);
+}
+
 void test_hint_logic() {
     printf("  Testing hint logic...\n");
     init_board_logic();
@@ -48,6 +133,10 @@ int main() {
     printf("Running AI logic tests...\n");
     test_mcts_init();
     test_mcts_basic_move();
+    test_atari_capture();
+    test_atari_escape();
+    test_edge_atari_capture();
+    test_edge_atari_escape();
     test_hint_logic();
     printf("All AI logic tests passed!\n");
     return 0;
