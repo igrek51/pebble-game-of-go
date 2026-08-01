@@ -8,7 +8,8 @@ typedef enum {
     VIEW,
     SELECTING_ROW,
     SELECTING_COL,
-    GAME_OVER_STATE
+    GAME_OVER_STATE,
+    AI_THINKING
 } UIState;
 
 typedef enum {

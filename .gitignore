@@ -3,3 +3,5 @@
 tests/test_ai
 tests/test_board
 tests/test_match
+tests/test_fallback
+pebble_screenshot_*.png

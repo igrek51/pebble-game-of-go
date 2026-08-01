@@ -14,7 +14,10 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
     graphics_fill_rect(ctx, bounds, 0, GCornerNone);
 
     GColor status_bg_color, status_text_color;
-    if (ui_state == GAME_OVER_STATE) {
+    if (ui_state == AI_THINKING) {
+        status_bg_color = GColorBlue;
+        status_text_color = GColorWhite;
+    } else if (ui_state == GAME_OVER_STATE) {
         status_bg_color = GColorBlue;
         status_text_color = GColorWhite;
     } else if (current_player == BLACK) {
@@ -30,7 +33,9 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
     graphics_context_set_text_color(ctx, status_text_color);
 
     char left_text[32];
-    if (ui_state == GAME_OVER_STATE) {
+    if (ui_state == AI_THINKING) {
+        snprintf(left_text, sizeof(left_text), "AI thinking...");
+    } else if (ui_state == GAME_OVER_STATE) {
         snprintf(left_text, sizeof(left_text), "%s",
                  (black_score > white_score) ? "Black won" : "White won");
     } else {

@@ -1,11 +1,11 @@
 #include "ai/mcts.h"
+#include "comm/comm.h"
 #include "game_state.h"
 #include "logic/board.h"
 #include "ui/board_layer.h"
 #include "ui/dialogs.h"
 #include <pebble.h>
 
-// UI state
 static int selected_row = 0;
 static int selected_col = 0;
 static int last_row = 4;
@@ -13,11 +13,9 @@ static int last_col = 4;
 
 static AppTimer *ai_move_timer = NULL;
 
-// Window & layer
 static Window *s_main_window;
 static Layer *s_canvas_layer;
 
-// Menus
 static Window *s_menu_window = NULL;
 static SimpleMenuLayer *s_menu_layer = NULL;
 static SimpleMenuSection menu_sections[1];
@@ -25,9 +23,11 @@ static Window *s_mode_window = NULL;
 static SimpleMenuLayer *s_mode_layer = NULL;
 static SimpleMenuSection mode_sections[1];
 
-// Forward declarations
 static void init_board_full(void);
 static void ai_move_callback(void *data);
+static void on_pkjs_move(int row, int col, bool is_pass);
+static void run_local_mcts(void);
+static void after_move_played(void);
 static void canvas_update_proc(Layer *layer, GContext *ctx);
 static void handle_click(ClickRecognizerRef recognizer, void *context);
 static void show_menu(void);
@@ -35,7 +35,6 @@ static void hide_menu(void);
 static void show_mode_select(void);
 static void hide_mode_select(void);
 
-// Initialize everything
 static void init_board_full(void) {
     init_board_logic();
     selected_row = 0;
@@ -47,13 +46,13 @@ static void init_board_full(void) {
         app_timer_cancel(ai_move_timer);
         ai_move_timer = NULL;
     }
+    comm_cancel();
 
     if (game_mode == MODE_BLACK_AI || game_mode == MODE_AI_AI) {
         ai_move_timer = app_timer_register(300, ai_move_callback, NULL);
     }
 }
 
-// Pass action
 static void do_pass_ui(void) {
     consecutive_passes++;
     ko_active = false;
@@ -67,15 +66,7 @@ static void do_pass_ui(void) {
 
     current_player = (current_player == BLACK) ? WHITE : BLACK;
     ui_state = VIEW;
-
-    bool next_is_ai = (game_mode == MODE_BLACK_AI && current_player == BLACK) ||
-                      (game_mode == MODE_WHITE_AI && current_player == WHITE) ||
-                      (game_mode == MODE_AI_AI);
-    if (next_is_ai) {
-        if (ai_move_timer)
-            app_timer_cancel(ai_move_timer);
-        ai_move_timer = app_timer_register(300, ai_move_callback, NULL);
-    }
+    after_move_played();
 }
 
 static bool try_place_stone_ui(int row, int col) {
@@ -128,6 +119,16 @@ static bool try_place_stone_ui(int row, int col) {
     consecutive_passes = 0;
     current_player = opponent;
     ui_state = VIEW;
+    return true;
+}
+
+static void after_move_played(void) {
+    APP_LOG(APP_LOG_LEVEL_INFO, "game: after_move_played -> next is %s, player=%d",
+            ((game_mode == MODE_BLACK_AI && current_player == BLACK) ||
+             (game_mode == MODE_WHITE_AI && current_player == WHITE) ||
+             (game_mode == MODE_AI_AI)) ? "AI" : "human",
+            current_player);
+    layer_mark_dirty(s_canvas_layer);
 
     bool next_is_ai = (game_mode == MODE_BLACK_AI && current_player == BLACK) ||
                       (game_mode == MODE_WHITE_AI && current_player == WHITE) ||
@@ -137,48 +138,90 @@ static bool try_place_stone_ui(int row, int col) {
             app_timer_cancel(ai_move_timer);
         ai_move_timer = app_timer_register(300, ai_move_callback, NULL);
     }
-
-    return true;
 }
 
-static void ai_move_callback(void *data) {
-    ai_move_timer = NULL;
-    if (ui_state != VIEW)
-        return;
+static void on_pkjs_move(int row, int col, bool is_pass) {
+    APP_LOG(APP_LOG_LEVEL_INFO, "game: pkjs responded: (%d,%d) pass=%d", row, col, is_pass);
+    ui_state = VIEW;
 
-    if (!can_make_legal_move(current_player)) {
+    if (row < 0) {
+        APP_LOG(APP_LOG_LEVEL_INFO, "game: pkjs unavailable, running local MCTS directly");
+        if (!can_make_legal_move(current_player)) {
+            do_pass_ui();
+            return;
+        }
+        run_local_mcts();
+        return;
+    }
+
+    if (is_pass || (row == MCTS_PASS_ROW && col == MCTS_PASS_COL)) {
+        APP_LOG(APP_LOG_LEVEL_INFO, "game: pkjs chose PASS");
         do_pass_ui();
         layer_mark_dirty(s_canvas_layer);
         return;
     }
 
-    // First move D5 (only if no moves made yet)
-    if (moves_made == 0 && current_player == BLACK &&
-        get_stone(4, 3) == EMPTY) {
-        try_place_stone_ui(4, 3);
-    } else {
-        mcts_run(MCTS_ITERATIONS, current_player, last_row, last_col,
-                 consecutive_passes);
-        uint16_t best_child = mcts_get_best_move();
-        if (best_child == MCTS_NO_NODE) {
-            do_pass_ui();
-        } else {
-            int r, c;
-            mcts_get_move_coords(best_child, &r, &c);
-            if (r == MCTS_PASS_ROW && c == MCTS_PASS_COL) {
-                do_pass_ui();
-            } else {
-                try_place_stone_ui(r, c);
-            }
-        }
-    }
-    layer_mark_dirty(s_canvas_layer);
+    APP_LOG(APP_LOG_LEVEL_INFO, "game: playing pkjs move at (%d,%d)", row, col);
+    try_place_stone_ui(row, col);
+    after_move_played();
 }
 
-// Helper needed in mcts.c
-// void mcts_get_move_coords(uint16_t node_idx, int *r, int *c);
+static void run_local_mcts(void) {
+    APP_LOG(APP_LOG_LEVEL_INFO, "game: running local MCTS (player=%d, iters=%d)",
+            current_player, MCTS_ITERATIONS);
+    mcts_run(MCTS_ITERATIONS, current_player, last_row, last_col,
+             consecutive_passes);
+    uint16_t best_child = mcts_get_best_move();
+    if (best_child == MCTS_NO_NODE) {
+        APP_LOG(APP_LOG_LEVEL_INFO, "game: local MCTS returned no node, passing");
+        do_pass_ui();
+    } else {
+        int r, c;
+        mcts_get_move_coords(best_child, &r, &c);
+        if (r == MCTS_PASS_ROW && c == MCTS_PASS_COL) {
+            APP_LOG(APP_LOG_LEVEL_INFO, "game: local MCTS chose PASS");
+            do_pass_ui();
+        } else {
+            APP_LOG(APP_LOG_LEVEL_INFO, "game: local MCTS chose (%d,%d)", r, c);
+            try_place_stone_ui(r, c);
+        }
+    }
+    after_move_played();
+}
 
-// I'll update mcts.c/h later. For now, let's continue main.c
+static void ai_move_callback(void *data) {
+    ai_move_timer = NULL;
+    APP_LOG(APP_LOG_LEVEL_INFO, "game: ai_move_callback (player=%d, ui_state=%d)",
+            current_player, ui_state);
+    if (ui_state != VIEW)
+        return;
+
+    if (!can_make_legal_move(current_player)) {
+        APP_LOG(APP_LOG_LEVEL_INFO, "game: no legal moves, passing");
+        do_pass_ui();
+        layer_mark_dirty(s_canvas_layer);
+        return;
+    }
+
+    if (moves_made == 0 && current_player == BLACK &&
+        get_stone(4, 3) == EMPTY) {
+        APP_LOG(APP_LOG_LEVEL_INFO, "game: first move D5");
+        try_place_stone_ui(4, 3);
+        after_move_played();
+        return;
+    }
+
+    if (comm_is_connected()) {
+        APP_LOG(APP_LOG_LEVEL_INFO, "game: trying pkjs...");
+        ui_state = AI_THINKING;
+        layer_mark_dirty(s_canvas_layer);
+        comm_request_ai_move(current_player, last_row, last_col,
+                             consecutive_passes, on_pkjs_move);
+    } else {
+        APP_LOG(APP_LOG_LEVEL_INFO, "game: BT disconnected, local MCTS");
+        run_local_mcts();
+    }
+}
 
 static void canvas_update_proc(Layer *layer, GContext *ctx) {
     board_layer_update_proc(layer, ctx, selected_row, selected_col);
@@ -193,6 +236,9 @@ static void click_config_provider(Window *window) {
 
 static void handle_click(ClickRecognizerRef recognizer, void *context) {
     ButtonId button = click_recognizer_get_button_id(recognizer);
+
+    if (ui_state == AI_THINKING)
+        return;
 
     if (ui_state == VIEW) {
         if (button == BUTTON_ID_BACK)
@@ -237,7 +283,6 @@ static void handle_click(ClickRecognizerRef recognizer, void *context) {
     layer_mark_dirty(s_canvas_layer);
 }
 
-// Menu callbacks
 static void menu_select_callback(int index, void *context) {
     if (index == 0)
         do_pass_ui();
@@ -366,6 +411,7 @@ static void window_unload(Window *window) { layer_destroy(s_canvas_layer); }
 
 static void init(void) {
     mcts_init_zobrist();
+    comm_init();
     init_board_full();
     s_main_window = window_create();
     window_set_window_handlers(
