@@ -5,7 +5,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define COMM_TIMEOUT_MS 6000
+#define COMM_TIMEOUT_MS 12000
 
 typedef void (*comm_ai_move_callback)(int row, int col, bool is_pass);
 

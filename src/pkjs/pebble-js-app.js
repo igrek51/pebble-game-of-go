@@ -8,11 +8,11 @@ var MCTS_NO_NODE = -1;
 var MCTS_ITERATIONS = 300;
 var MCTS_MAX_PLAYOUT = 120;
 // Wall-clock budget for one AI move. The watch falls back to its local AI
-// after COMM_TIMEOUT_MS (6000ms), so the reply must leave well before that,
+// after COMM_TIMEOUT_MS (12000ms), so the reply must leave well before that,
 // including AppMessage transport time. Phone JS engines are much slower than
 // desktop V8 (300 iterations measured ~1.7s on V8), so mctsRun() stops early
 // once this budget is exceeded instead of running all iterations.
-var MCTS_TIME_BUDGET_MS = 4000;
+var MCTS_TIME_BUDGET_MS = 10000;
 
 var nodePool = [];
 var nodePoolUsed = 0;

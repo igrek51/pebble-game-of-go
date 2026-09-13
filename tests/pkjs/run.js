@@ -125,7 +125,7 @@ test('missing payload is ignored without throwing', () => {
     assert.strictEqual(pebble.sentMessages.length, 0);
 });
 
-/* --- responsiveness: reply must beat the 6000ms watch timeout --- */
+/* --- responsiveness: reply must beat the 12000ms watch timeout --- */
 
 test('MCTS reply arrives within time budget', () => {
     loadPkjs();
@@ -133,7 +133,7 @@ test('MCTS reply arrives within time budget', () => {
     const msgs = aiRequest({ 0: 0, 1: 1, 2: 4, 3: 4, 4: 0, 5: validBoard(), 6: validKo() });
     const dt = Date.now() - t0;
     assertSingleReply(msgs);
-    assert.ok(dt < 6000, 'handler took ' + dt + 'ms, must be < 6000ms watch timeout');
+    assert.ok(dt < 12000, 'handler took ' + dt + 'ms, must be < 12000ms watch timeout');
     console.log('    (handler took ' + dt + 'ms)');
 });
 
