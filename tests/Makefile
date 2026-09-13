@@ -2,7 +2,7 @@ CC = gcc
 CFLAGS = -Wall -Wextra -I../src/c -DUNIT_TEST
 LIBS = -lm
 
-SRC_LOGIC = ../src/c/logic/board.c ../src/c/game_state.c
+SRC_LOGIC = ../src/c/logic/board.c ../src/c/logic/life.c ../src/c/game_state.c
 SRC_AI = ../src/c/ai/mcts.c $(SRC_LOGIC)
 
 TESTS = test_board test_ai test_match test_fallback

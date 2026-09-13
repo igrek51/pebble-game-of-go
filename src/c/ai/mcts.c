@@ -1,4 +1,5 @@
 #include "mcts.h"
+#include "../logic/life.h"
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -652,65 +653,10 @@ void mcts_get_move_coords(uint16_t node_idx, int *r, int *c) {
 }
 
 int estimate_score_10x_logic(void) {
-    int black_stones = 0, white_stones = 0;
-    int black_territory_10x = 0, white_territory_10x = 0;
-
-    for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
-        if (board[i] == BLACK)
-            black_stones++;
-        else if (board[i] == WHITE)
-            white_stones++;
-    }
-
-    for (int row = 0; row < BOARD_SIZE; row++) {
-        for (int col = 0; col < BOARD_SIZE; col++) {
-            int idx = board_index(row, col);
-            if (board[idx] != EMPTY)
-                continue;
-
-            int min_black_dist = 999;
-            int min_white_dist = 999;
-
-            for (int r = 0; r < BOARD_SIZE; r++) {
-                for (int c = 0; c < BOARD_SIZE; c++) {
-                    int stone_idx = board_index(r, c);
-                    if (board[stone_idx] == EMPTY)
-                        continue;
-                    int dist = abs(row - r) + abs(col - c);
-
-                    if (board[stone_idx] == BLACK && dist < min_black_dist) {
-                        min_black_dist = dist;
-                    }
-                    if (board[stone_idx] == WHITE && dist < min_white_dist) {
-                        min_white_dist = dist;
-                    }
-                }
-            }
-
-            int black_value =
-                (min_black_dist <= 0) ? 10 : (10 - (min_black_dist - 1));
-            int white_value =
-                (min_white_dist <= 0) ? 10 : (10 - (min_white_dist - 1));
-
-            if (black_value < 2)
-                black_value = 2;
-            // Assign territory based on nearest stone (weighted by distance)
-            if (min_black_dist < min_white_dist) {
-                black_territory_10x += black_value;
-            } else if (min_white_dist < min_black_dist) {
-                white_territory_10x += white_value;
-            }
-        }
-    }
-
-    // Round to nearest 10
-    black_territory_10x = ((black_territory_10x + 5) / 10) * 10;
-    white_territory_10x = ((white_territory_10x + 5) / 10) * 10;
-
-    int black_score_10x = (black_stones * 10) + black_territory_10x;
-    int white_score_10x = (white_stones * 10) + white_territory_10x + 75;
-
-    return black_score_10x - white_score_10x;
+    // Live score banner: dead-stone-aware area score (Benson + flood fill),
+    // replacing the old nearest-stone influence heuristic. Dead invaders no
+    // longer count their stones or steal territory in the estimate.
+    return score_board_smart_10x(board);
 }
 
 void suggest_hint_logic(uint8_t current_player, int last_row, int last_col,

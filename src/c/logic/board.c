@@ -1,5 +1,6 @@
 #include "board.h"
 #include "../game_state.h"
+#include "life.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -135,21 +136,24 @@ void remove_group(int start_row, int start_col, uint8_t color) {
 // Iterative Flood-Fill (BFS).
 // "neutral" (dame) adds zero points to either player
 // Positive Value (> 0): Black is winning
-int score_board(uint8_t *b) {
+void board_area_parts(uint8_t *b, int *b_stones, int *b_terr, int *w_stones,
+                      int *w_terr) {
     static bool visited[BOARD_SIZE * BOARD_SIZE];
     static int queue_r[BOARD_SIZE * BOARD_SIZE];
     static int queue_c[BOARD_SIZE * BOARD_SIZE];
 
     memset(visited, 0, sizeof(visited));
 
-    int b_territory = 0, w_territory = 0;
-    int b_stones = 0, w_stones = 0;
+    *b_terr = 0;
+    *w_terr = 0;
+    *b_stones = 0;
+    *w_stones = 0;
 
     for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
         if (b[i] == BLACK)
-            b_stones++;
+            (*b_stones)++;
         else if (b[i] == WHITE)
-            w_stones++;
+            (*w_stones)++;
     }
 
     const int dr[] = {-1, 1, 0, 0};
@@ -201,93 +205,35 @@ int score_board(uint8_t *b) {
             }
 
             if (touches_black && !touches_white) {
-                b_territory += region_size;
+                *b_terr += region_size;
             } else if (touches_white && !touches_black) {
-                w_territory += region_size;
+                *w_terr += region_size;
             }
         }
     }
+}
 
-    int black_total = b_stones + b_territory;
-    int white_total = w_stones + w_territory + 7; // komi 7.5 (approximate)
+// Raw area score for MCTS playouts (played-out positions need no dead
+// removal: dead stones get captured during the playout itself).
+int score_board(uint8_t *b) {
+    int b_stones = 0, b_terr = 0, w_stones = 0, w_terr = 0;
+    board_area_parts(b, &b_stones, &b_terr, &w_stones, &w_terr);
+    int black_total = b_stones + b_terr;
+    int white_total = w_stones + w_terr + 7; // komi 7.5 (approximate)
     return black_total - white_total;
 }
 
 void compute_chinese_score(void) {
-    static bool visited[BOARD_SIZE * BOARD_SIZE];
-    static int queue_r[BOARD_SIZE * BOARD_SIZE];
-    static int queue_c[BOARD_SIZE * BOARD_SIZE];
-
-    memset(visited, 0, sizeof(visited));
-
-    int b_territory = 0, w_territory = 0;
-    int b_stones = 0, w_stones = 0;
-
-    for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
-        if (board[i] == BLACK)
-            b_stones++;
-        else if (board[i] == WHITE)
-            w_stones++;
-    }
-
-    const int dr[] = {-1, 1, 0, 0};
-    const int dc[] = {0, 0, -1, 1};
-
-    for (int sr = 0; sr < BOARD_SIZE; sr++) {
-        for (int sc = 0; sc < BOARD_SIZE; sc++) {
-            int sidx = board_index(sr, sc);
-            if (board[sidx] != EMPTY || visited[sidx])
-                continue;
-
-            int head = 0, tail = 0;
-            queue_r[tail] = sr;
-            queue_c[tail] = sc;
-            tail++;
-            visited[sidx] = true;
-
-            int region_size = 0;
-            bool touches_black = false;
-            bool touches_white = false;
-
-            while (head < tail) {
-                int r = queue_r[head];
-                int c = queue_c[head];
-                head++;
-                region_size++;
-
-                for (int d = 0; d < 4; d++) {
-                    int nr = r + dr[d];
-                    int nc = c + dc[d];
-                    int nidx = board_index(nr, nc);
-                    if (nidx < 0)
-                        continue;
-
-                    uint8_t ns = board[nidx];
-                    if (ns == BLACK) {
-                        touches_black = true;
-                    } else if (ns == WHITE) {
-                        touches_white = true;
-                    } else {
-                        if (!visited[nidx]) {
-                            visited[nidx] = true;
-                            queue_r[tail] = nr;
-                            queue_c[tail] = nc;
-                            tail++;
-                        }
-                    }
-                }
-            }
-
-            if (touches_black && !touches_white) {
-                b_territory += region_size;
-            } else if (touches_white && !touches_black) {
-                w_territory += region_size;
-            }
-        }
-    }
-
-    black_score = b_stones + b_territory;
-    white_score = w_stones + w_territory;
+    // Final score: dead stones come off first (games end on passes with
+    // dead groups still on the board), then the shared flood fill.
+    // Komi is NOT included here; the display adds it (see board_layer).
+    uint8_t w[BOARD_SIZE * BOARD_SIZE];
+    memcpy(w, board, sizeof(w));
+    remove_dead_stones(w);
+    int b_stones = 0, b_terr = 0, w_stones = 0, w_terr = 0;
+    board_area_parts(w, &b_stones, &b_terr, &w_stones, &w_terr);
+    black_score = b_stones + b_terr;
+    white_score = w_stones + w_terr;
 }
 
 bool can_make_legal_move(uint8_t player) {

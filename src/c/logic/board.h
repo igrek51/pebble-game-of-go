@@ -29,4 +29,9 @@ int score_board(uint8_t *b);
 void compute_chinese_score(void);
 bool can_make_legal_move(uint8_t player);
 
+// Shared Tromp-Taylor-like flood fill: counts stones and enclosed empty
+// regions for both colors on any board buffer (no komi applied).
+void board_area_parts(uint8_t *b, int *b_stones, int *b_terr, int *w_stones,
+                      int *w_terr);
+
 #endif
