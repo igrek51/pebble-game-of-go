@@ -14,7 +14,7 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
     graphics_fill_rect(ctx, bounds, 0, GCornerNone);
 
     GColor status_bg_color, status_text_color;
-    if (ui_state == AI_THINKING) {
+    if (ui_state == AI_THINKING || ui_state == LOCAL_THINKING) {
         status_bg_color = GColorBlue;
         status_text_color = GColorWhite;
     } else if (ui_state == GAME_OVER_STATE) {
@@ -33,8 +33,23 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
     graphics_context_set_text_color(ctx, status_text_color);
 
     char left_text[32];
+    // Engine labels need the full bar width at a smaller font: neither fits
+    // the 120px turn area at 18pt. The live score is hidden while thinking.
+    bool thinking = (ui_state == AI_THINKING || ui_state == LOCAL_THINKING);
     if (ui_state == AI_THINKING) {
-        snprintf(left_text, sizeof(left_text), "AI thinking...");
+        snprintf(left_text, sizeof(left_text), "MCTS companion is thinking");
+        graphics_draw_text(ctx, left_text,
+                           fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                           GRect(5, 2, width - 10, 20),
+                           GTextOverflowModeTrailingEllipsis,
+                           GTextAlignmentCenter, NULL);
+    } else if (ui_state == LOCAL_THINKING) {
+        snprintf(left_text, sizeof(left_text), "Pebble is thinking");
+        graphics_draw_text(ctx, left_text,
+                           fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                           GRect(5, 2, width - 10, 20),
+                           GTextOverflowModeTrailingEllipsis,
+                           GTextAlignmentCenter, NULL);
     } else if (ui_state == GAME_OVER_STATE) {
         snprintf(left_text, sizeof(left_text), "%s",
                  (black_score > white_score) ? "Black won" : "White won");
@@ -45,13 +60,14 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
         snprintf(left_text, sizeof(left_text), "%s %s",
                  (current_player == BLACK ? "Black" : "White"),
                  is_ai ? "is thinking" : "to move");
+        graphics_draw_text(ctx, left_text,
+                           fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                           GRect(5, 0, 120, 20), GTextOverflowModeWordWrap,
+                           GTextAlignmentLeft, NULL);
     }
-    graphics_draw_text(ctx, left_text,
-                       fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                        GRect(5, 0, 120, 20), GTextOverflowModeWordWrap,
-                        GTextAlignmentLeft, NULL);
 
-    char right_text[32];
+    if (!thinking) {
+        char right_text[32];
     if (ui_state == GAME_OVER_STATE) {
         int diff_10x = (black_score * 10) - (white_score * 10 + 75);
         int abs_diff_10x = diff_10x < 0 ? -diff_10x : diff_10x;
@@ -69,6 +85,7 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
                        fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
                         GRect(width - 80, 0, 75, 20), GTextOverflowModeWordWrap,
                        GTextAlignmentRight, NULL);
+    }
 
     // Board background
     graphics_context_set_stroke_color(ctx, COLOR_GRID);

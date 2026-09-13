@@ -12,6 +12,7 @@ static int last_row = 4;
 static int last_col = 4;
 
 static AppTimer *ai_move_timer = NULL;
+static AppTimer *local_mcts_timer = NULL;
 
 static Window *s_main_window;
 static Layer *s_canvas_layer;
@@ -25,6 +26,8 @@ static SimpleMenuSection mode_sections[1];
 
 static void init_board_full(void);
 static void ai_move_callback(void *data);
+static void local_mcts_callback(void *data);
+static void schedule_local_mcts(void);
 static void on_pkjs_move(int row, int col, bool is_pass);
 static void run_local_mcts(void);
 static void after_move_played(void);
@@ -45,6 +48,10 @@ static void init_board_full(void) {
     if (ai_move_timer) {
         app_timer_cancel(ai_move_timer);
         ai_move_timer = NULL;
+    }
+    if (local_mcts_timer) {
+        app_timer_cancel(local_mcts_timer);
+        local_mcts_timer = NULL;
     }
     comm_cancel();
 
@@ -150,7 +157,7 @@ static void on_pkjs_move(int row, int col, bool is_pass) {
             do_pass_ui();
             return;
         }
-        run_local_mcts();
+        schedule_local_mcts();
         return;
     }
 
@@ -164,6 +171,26 @@ static void on_pkjs_move(int row, int col, bool is_pass) {
     APP_LOG(APP_LOG_LEVEL_INFO, "game: playing pkjs move at (%d,%d)", row, col);
     try_place_stone_ui(row, col);
     after_move_played();
+}
+
+// Deferred on-watch computation: show the "Pebble is thinking" banner first
+// (the layer only repaints once the event loop regains control), then run
+// the synchronous local MCTS from the timer callback.
+static void schedule_local_mcts(void) {
+    APP_LOG(APP_LOG_LEVEL_INFO, "game: scheduling local MCTS");
+    ui_state = LOCAL_THINKING;
+    layer_mark_dirty(s_canvas_layer);
+    if (local_mcts_timer)
+        app_timer_cancel(local_mcts_timer);
+    local_mcts_timer = app_timer_register(100, local_mcts_callback, NULL);
+}
+
+static void local_mcts_callback(void *data) {
+    local_mcts_timer = NULL;
+    if (ui_state != LOCAL_THINKING)
+        return;
+    ui_state = VIEW;
+    run_local_mcts();
 }
 
 static void run_local_mcts(void) {
@@ -219,7 +246,7 @@ static void ai_move_callback(void *data) {
                              consecutive_passes, on_pkjs_move);
     } else {
         APP_LOG(APP_LOG_LEVEL_INFO, "game: BT disconnected, local MCTS");
-        run_local_mcts();
+        schedule_local_mcts();
     }
 }
 
@@ -237,7 +264,7 @@ static void click_config_provider(Window *window) {
 static void handle_click(ClickRecognizerRef recognizer, void *context) {
     ButtonId button = click_recognizer_get_button_id(recognizer);
 
-    if (ui_state == AI_THINKING)
+    if (ui_state == AI_THINKING || ui_state == LOCAL_THINKING)
         return;
 
     if (ui_state == VIEW) {
