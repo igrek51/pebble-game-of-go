@@ -272,9 +272,13 @@ static void handle_click(ClickRecognizerRef recognizer, void *context) {
         else if (button == BUTTON_ID_DOWN)
             selected_col =
                 (selected_col < BOARD_SIZE - 1) ? selected_col + 1 : 0;
-        else if (button == BUTTON_ID_SELECT)
-            try_place_stone_ui(selected_row, selected_col);
-        else if (button == BUTTON_ID_BACK)
+        else if (button == BUTTON_ID_SELECT) {
+            // Human placed a stone: arm the AI timer (if next is AI) exactly
+            // like every other move path does. Only on success — an illegal
+            // move leaves the cursor in SELECTING_COL for a retry.
+            if (try_place_stone_ui(selected_row, selected_col))
+                after_move_played();
+        } else if (button == BUTTON_ID_BACK)
             ui_state = SELECTING_ROW;
     } else if (ui_state == GAME_OVER_STATE) {
         if (button == BUTTON_ID_SELECT || button == BUTTON_ID_BACK)

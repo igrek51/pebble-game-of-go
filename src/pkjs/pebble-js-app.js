@@ -7,6 +7,12 @@ var MCTS_POOL_SIZE = 10000;
 var MCTS_NO_NODE = -1;
 var MCTS_ITERATIONS = 300;
 var MCTS_MAX_PLAYOUT = 120;
+// Wall-clock budget for one AI move. The watch falls back to its local AI
+// after COMM_TIMEOUT_MS (4000ms), so the reply must leave well before that,
+// including AppMessage transport time. Phone JS engines are much slower than
+// desktop V8 (300 iterations measured ~1.7s on V8), so mctsRun() stops early
+// once this budget is exceeded instead of running all iterations.
+var MCTS_TIME_BUDGET_MS = 2500;
 
 var nodePool = [];
 var nodePoolUsed = 0;
@@ -570,7 +576,15 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
 
     rootNode = allocNode(MCTS_PASS_ROW, MCTS_PASS_COL, EMPTY);
 
-    for (var iter = 0; iter < iterations; iter++) {
+    var startTime = Date.now();
+    var iter = 0;
+    for (iter = 0; iter < iterations; iter++) {
+        // Time-boxed: stop early so the reply beats the watch-side timeout.
+        // Date.now() is checked every 16 iterations to keep overhead low.
+        if ((iter & 15) === 0 && iter > 0 && (Date.now() - startTime) > MCTS_TIME_BUDGET_MS) {
+            console.log('pkjs: time budget exceeded at iter ' + iter + '/' + iterations);
+            break;
+        }
         if (iter % 500 === 0)
             console.log('pkjs: MCTS iter ' + iter + '/' + iterations + ' pool=' + nodePoolUsed);
         mctsPathLen = 0;
@@ -732,7 +746,49 @@ function mctsGetBestMove() {
 }
 
 
-// ---- Pebble app message handler ----
+// Send a move reply back to the watch. This is the ONLY way the watch
+// leaves AI_THINKING (besides its own timeout), so every code path below
+// must end here — never throw without replying, or the game appears hung
+// with dead buttons until the watch-side timeout fires.
+function sendMoveReply(moveRow, moveCol, isPass) {
+    console.log('pkjs: sending result back to watch...');
+    try {
+        Pebble.sendAppMessage({
+            0: 1,
+            1: moveRow,
+            2: moveCol,
+            3: isPass
+        }, function() {
+            console.log('pkjs: result sent OK');
+        }, function() {
+            console.log('pkjs: result send FAILED');
+        });
+    } catch (e) {
+        console.log('pkjs: sendAppMessage threw: ' + (e && e.message));
+    }
+}
+
+// Copy a byte-array payload (Uint8Array, ArrayBuffer, or plain Array) into
+// a plain JS array of length `len`. Returns false when the payload is
+// missing, short, or non-numeric — caller then replies pass instead of
+// running MCTS on garbage.
+function copyBytesFromPayload(data, len, dst) {
+    var src = data;
+    if (src instanceof ArrayBuffer) {
+        src = new Uint8Array(src);
+    }
+    if (!src || typeof src.length !== 'number' || src.length < len) {
+        return false;
+    }
+    for (var i = 0; i < len; i++) {
+        var v = src[i];
+        if (typeof v !== 'number' || !(v >= 0 && v <= 255)) {
+            return false;
+        }
+        dst[i] = v | 0;
+    }
+    return true;
+}
 
 Pebble.addEventListener('ready', function() {
     console.log('pkjs: ready');
@@ -743,8 +799,22 @@ Pebble.addEventListener('ready', function() {
     gKoActive = false;
 });
 
+// ---- Pebble app message handler ----
+
 Pebble.addEventListener('appmessage', function(e) {
-    var type = e.payload[0];
+    try {
+        handleAiRequest(e && e.payload);
+    } catch (err) {
+        // Last-resort guarantee: any unexpected throw still unblocks the
+        // watch (it treats the pass as a normal pass, local ko/suicide rules
+        // still apply on its side).
+        console.log('pkjs: handler threw, replying pass: ' + (err && err.message));
+        sendMoveReply(0, 0, 1);
+    }
+});
+
+function handleAiRequest(payload) {
+    var type = payload ? payload[0] : undefined;
     console.log('pkjs: appmessage received, type=' + type);
     if (type !== 0) {
         console.log('pkjs: ignoring type=' + type);
@@ -752,34 +822,33 @@ Pebble.addEventListener('appmessage', function(e) {
     }
 
     console.log('pkjs: parsing board data...');
-    var boardData = e.payload[5];
-    var boardArray;
-    if (boardData instanceof ArrayBuffer) {
-        boardArray = new Uint8Array(boardData);
-    } else {
-        boardArray = boardData;
+    if (!copyBytesFromPayload(payload[5], 81, gBoard)) {
+        console.log('pkjs: invalid board payload, replying pass');
+        sendMoveReply(0, 0, 1);
+        return;
     }
-    for (var i = 0; i < 81; i++)
-        gBoard[i] = boardArray[i];
 
-    var koData = e.payload[6];
-    var koArray;
-    if (koData instanceof ArrayBuffer) {
-        koArray = new Uint8Array(koData);
-    } else {
-        koArray = koData;
+    var koRaw = payload[6];
+    var koSrc = (koRaw instanceof ArrayBuffer) ? new Uint8Array(koRaw) : koRaw;
+    if (!copyBytesFromPayload(koSrc, 81, gKoBoard)) {
+        console.log('pkjs: invalid ko payload, replying pass');
+        sendMoveReply(0, 0, 1);
+        return;
     }
-    for (var i = 0; i < 81; i++)
-        gKoBoard[i] = koArray[i];
-    gKoActive = koArray[81] !== 0;
+    gKoActive = (koSrc[81] | 0) !== 0;
 
-    var currentPlayer = e.payload[1];
-    var lastRow = e.payload[2];
-    var lastCol = e.payload[3];
-    var consecutivePasses = e.payload[4];
+    var currentPlayer = payload[1] | 0;
+    var lastRow = payload[2] | 0;
+    var lastCol = payload[3] | 0;
+    var consecutivePasses = payload[4] | 0;
+    if (currentPlayer !== BLACK && currentPlayer !== WHITE) {
+        console.log('pkjs: invalid player=' + payload[1] + ', replying pass');
+        sendMoveReply(0, 0, 1);
+        return;
+    }
     console.log('pkjs: player=' + currentPlayer + ' last=(' + lastRow + ',' + lastCol + ') passes=' + consecutivePasses);
 
-    console.log('pkjs: running MCTS with ' + MCTS_ITERATIONS + ' iterations...');
+    console.log('pkjs: running MCTS with up to ' + MCTS_ITERATIONS + ' iterations...');
     var startTime = Date.now();
     mctsRun(MCTS_ITERATIONS, currentPlayer, lastRow, lastCol, consecutivePasses);
     var elapsed = Date.now() - startTime;
@@ -802,15 +871,5 @@ Pebble.addEventListener('appmessage', function(e) {
         console.log('pkjs: best move=(' + moveRow + ',' + moveCol + ') visits=' + node.visits + ' wins=' + node.wins + ' pass=' + isPass);
     }
 
-    console.log('pkjs: sending result back to watch...');
-    Pebble.sendAppMessage({
-        0: 1,
-        1: moveRow,
-        2: moveCol,
-        3: isPass
-    }, function() {
-        console.log('pkjs: result sent OK');
-    }, function() {
-        console.log('pkjs: result send FAILED');
-    });
-});
+    sendMoveReply(moveRow, moveCol, isPass);
+}

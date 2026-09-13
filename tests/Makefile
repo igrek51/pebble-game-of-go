@@ -26,6 +26,7 @@ run: all
 	./test_ai
 	./test_match
 	./test_fallback
+	@if command -v node >/dev/null 2>&1; then node pkjs/run.js; else echo "node not found, skipping pkjs tests"; fi
 
 clean:
 	rm -f $(TESTS)

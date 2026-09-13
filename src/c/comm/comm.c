@@ -22,6 +22,18 @@ static void comm_trigger_fallback(void) {
     cb(-1, -1, false);
 }
 
+// Never read t->value->int32 without a type check first: the union field is
+// only valid for TUPLE_INT/TUPLE_UINT. Unchecked reads on cstring/byte-array
+// tuples crash or misbehave (same class of bug as the timely-plus
+// watchface strtol crash).
+static bool tuple_get_int(const Tuple *t, int *out) {
+    if (!t || !out)
+        return false;
+    if (t->type != TUPLE_INT && t->type != TUPLE_UINT)
+        return false;
+    *out = t->value->int32;
+    return true;
+}
 static void comm_timeout_handler(void *data) {
     s_timeout_timer = NULL;
     APP_LOG(APP_LOG_LEVEL_INFO, "comm: TIMEOUT after %dms", COMM_TIMEOUT_MS);
@@ -35,8 +47,9 @@ static void comm_inbox_handler(DictionaryIterator *iter, void *context) {
     }
 
     Tuple *type_tuple = dict_find(iter, 0);
-    if (!type_tuple || type_tuple->value->int32 != 1) {
-        APP_LOG(APP_LOG_LEVEL_DEBUG, "comm: inbox msg ignored (type=%d)", type_tuple ? (int)type_tuple->value->int32 : -1);
+    int msg_type = -1;
+    if (!tuple_get_int(type_tuple, &msg_type) || msg_type != 1) {
+        APP_LOG(APP_LOG_LEVEL_DEBUG, "comm: inbox msg ignored (type=%d)", msg_type);
         return;
     }
 
@@ -49,8 +62,16 @@ static void comm_inbox_handler(DictionaryIterator *iter, void *context) {
     Tuple *col_tuple = dict_find(iter, 2);
     Tuple *pass_tuple = dict_find(iter, 3);
 
-    if (!row_tuple || !col_tuple) {
-        APP_LOG(APP_LOG_LEVEL_ERROR, "comm: inbox msg missing row/col");
+    int row = 0, col = 0, pass_int = 0;
+    tuple_get_int(pass_tuple, &pass_int);
+    if (!tuple_get_int(row_tuple, &row) || !tuple_get_int(col_tuple, &col)) {
+        // Malformed reply: fail fast to local MCTS instead of sitting in
+        // AI_THINKING (buttons dead) until the 4s timeout fires.
+        APP_LOG(APP_LOG_LEVEL_ERROR, "comm: inbox msg missing/invalid row/col, fallback");
+        s_request_active = false;
+        comm_ai_move_callback malformed_cb = s_pending_callback;
+        s_pending_callback = NULL;
+        malformed_cb(-1, -1, false);
         return;
     }
 
@@ -58,9 +79,7 @@ static void comm_inbox_handler(DictionaryIterator *iter, void *context) {
     comm_ai_move_callback cb = s_pending_callback;
     s_pending_callback = NULL;
 
-    int row = row_tuple->value->int32;
-    int col = col_tuple->value->int32;
-    bool is_pass = pass_tuple ? (pass_tuple->value->int32 != 0) : false;
+    bool is_pass = (pass_int != 0);
 
     if (row == MCTS_PASS_ROW && col == MCTS_PASS_COL)
         is_pass = true;
@@ -79,9 +98,14 @@ static void comm_outbox_failed_handler(DictionaryIterator *iter,
     comm_trigger_fallback();
 }
 
+static void comm_inbox_dropped_handler(AppMessageResult reason, void *context) {
+    APP_LOG(APP_LOG_LEVEL_ERROR, "comm: inbox DROPPED (reason=%d)", reason);
+}
+
 void comm_init(void) {
     APP_LOG(APP_LOG_LEVEL_INFO, "comm: init (buffers 1024/1024)");
     app_message_register_inbox_received(comm_inbox_handler);
+    app_message_register_inbox_dropped(comm_inbox_dropped_handler);
     app_message_register_outbox_sent(comm_outbox_sent_handler);
     app_message_register_outbox_failed(comm_outbox_failed_handler);
     app_message_open(1024, 1024);
