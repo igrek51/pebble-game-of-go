@@ -8,8 +8,6 @@
 
 static int selected_row = 0;
 static int selected_col = 0;
-static int last_row = 4;
-static int last_col = 4;
 
 static AppTimer *ai_move_timer = NULL;
 static AppTimer *local_mcts_timer = NULL;
@@ -42,8 +40,6 @@ static void init_board_full(void) {
     init_board_logic();
     selected_row = 0;
     selected_col = 0;
-    last_row = 4;
-    last_col = 4;
 
     if (ai_move_timer) {
         app_timer_cancel(ai_move_timer);
@@ -63,6 +59,7 @@ static void init_board_full(void) {
 static void do_pass_ui(void) {
     consecutive_passes++;
     ko_active = false;
+    last_move_placed = false;
 
     if (consecutive_passes >= 2) {
         ui_state = GAME_OVER_STATE;
@@ -121,8 +118,9 @@ static bool try_place_stone_ui(int row, int col) {
     ko_active = any_captured;
 
     moves_made++;
-    last_row = row;
-    last_col = col;
+    last_move_row = row;
+    last_move_col = col;
+    last_move_placed = true;
     consecutive_passes = 0;
     current_player = opponent;
     ui_state = VIEW;
@@ -196,7 +194,7 @@ static void local_mcts_callback(void *data) {
 static void run_local_mcts(void) {
     APP_LOG(APP_LOG_LEVEL_INFO, "game: running local MCTS (player=%d, iters=%d)",
             current_player, MCTS_ITERATIONS);
-    mcts_run(MCTS_ITERATIONS, current_player, last_row, last_col,
+    mcts_run(MCTS_ITERATIONS, current_player, last_move_row, last_move_col,
              consecutive_passes);
     uint16_t best_child = mcts_get_best_move();
     if (best_child == MCTS_NO_NODE) {
@@ -242,7 +240,7 @@ static void ai_move_callback(void *data) {
         APP_LOG(APP_LOG_LEVEL_INFO, "game: trying pkjs...");
         ui_state = AI_THINKING;
         layer_mark_dirty(s_canvas_layer);
-        comm_request_ai_move(current_player, last_row, last_col,
+        comm_request_ai_move(current_player, last_move_row, last_move_col,
                              consecutive_passes, on_pkjs_move);
     } else {
         APP_LOG(APP_LOG_LEVEL_INFO, "game: BT disconnected, local MCTS");
@@ -272,7 +270,7 @@ static void handle_click(ClickRecognizerRef recognizer, void *context) {
             show_menu();
         else {
             ui_state = SELECTING_ROW;
-            selected_row = last_row;
+            selected_row = last_move_row;
             if (button == BUTTON_ID_UP && selected_row > 0)
                 selected_row--;
             if (button == BUTTON_ID_DOWN && selected_row < MENU_ROW)
@@ -288,7 +286,7 @@ static void handle_click(ClickRecognizerRef recognizer, void *context) {
                 show_menu();
             else {
                 ui_state = SELECTING_COL;
-                selected_col = last_col;
+                selected_col = last_move_col;
             }
         } else if (button == BUTTON_ID_BACK)
             ui_state = VIEW;
@@ -322,7 +320,7 @@ static void menu_select_callback(int index, void *context) {
         show_mode_select();
         return;
     } else if (index == 2) {
-        suggest_hint_logic(current_player, last_row, last_col, &selected_row,
+        suggest_hint_logic(current_player, last_move_row, last_move_col, &selected_row,
                            &selected_col);
         if (selected_row >= 0)
             ui_state = SELECTING_COL;

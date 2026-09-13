@@ -9,6 +9,9 @@ int black_score = 0;
 int white_score = 0;
 UIState ui_state = VIEW;
 GameMode game_mode = MODE_WHITE_AI;
+int last_move_row = 4;
+int last_move_col = 4;
+bool last_move_placed = false;
 
 void init_board_logic(void) {
     memset(board, EMPTY, sizeof(board));
@@ -20,4 +23,7 @@ void init_board_logic(void) {
     black_score = 0;
     white_score = 0;
     ui_state = VIEW;
+    last_move_row = 4;
+    last_move_col = 4;
+    last_move_placed = false;
 }

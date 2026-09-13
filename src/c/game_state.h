@@ -27,6 +27,9 @@ extern int black_score;
 extern int white_score;
 extern UIState ui_state;
 extern GameMode game_mode;
+extern int last_move_row;
+extern int last_move_col;
+extern bool last_move_placed;
 
 void init_board_logic(void);
 

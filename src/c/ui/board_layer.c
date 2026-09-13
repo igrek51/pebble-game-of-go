@@ -14,10 +14,9 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
     graphics_fill_rect(ctx, bounds, 0, GCornerNone);
 
     GColor status_bg_color, status_text_color;
-    if (ui_state == AI_THINKING || ui_state == LOCAL_THINKING) {
-        status_bg_color = GColorBlue;
-        status_text_color = GColorWhite;
-    } else if (ui_state == GAME_OVER_STATE) {
+    // While thinking, the banner takes the thinking side's colors (same as
+    // its turn): white thinking = black text on white, and vice versa.
+    if (ui_state == GAME_OVER_STATE) {
         status_bg_color = GColorBlue;
         status_text_color = GColorWhite;
     } else if (current_player == BLACK) {
@@ -33,23 +32,19 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
     graphics_context_set_text_color(ctx, status_text_color);
 
     char left_text[32];
-    // Engine labels need the full bar width at a smaller font: neither fits
-    // the 120px turn area at 18pt. The live score is hidden while thinking.
+    // Thinking labels need a smaller font; the live score stays visible on
+    // the right exactly like on a human turn.
     bool thinking = (ui_state == AI_THINKING || ui_state == LOCAL_THINKING);
-    if (ui_state == AI_THINKING) {
-        snprintf(left_text, sizeof(left_text), "MCTS companion is thinking");
+    if (thinking) {
+        if (ui_state == AI_THINKING)
+            snprintf(left_text, sizeof(left_text), "Companion thinking…");
+        else
+            snprintf(left_text, sizeof(left_text), "Pebble is thinking");
         graphics_draw_text(ctx, left_text,
                            fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
-                           GRect(5, 2, width - 10, 20),
+                           GRect(5, 1, width - 50, 20),
                            GTextOverflowModeTrailingEllipsis,
-                           GTextAlignmentCenter, NULL);
-    } else if (ui_state == LOCAL_THINKING) {
-        snprintf(left_text, sizeof(left_text), "Pebble is thinking");
-        graphics_draw_text(ctx, left_text,
-                           fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
-                           GRect(5, 2, width - 10, 20),
-                           GTextOverflowModeTrailingEllipsis,
-                           GTextAlignmentCenter, NULL);
+                           GTextAlignmentLeft, NULL);
     } else if (ui_state == GAME_OVER_STATE) {
         snprintf(left_text, sizeof(left_text), "%s",
                  (black_score > white_score) ? "Black won" : "White won");
@@ -85,6 +80,19 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
                        fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
                         GRect(width - 80, 0, 75, 20), GTextOverflowModeWordWrap,
                        GTextAlignmentRight, NULL);
+    } else {
+        // Thinking: same live estimate as a human turn, smaller to match.
+        int diff_10x = estimate_score_10x_logic();
+        int abs_diff_10x = diff_10x < 0 ? -diff_10x : diff_10x;
+        char think_score[16];
+        snprintf(think_score, sizeof(think_score), "B%c%d.%d",
+                 (diff_10x >= 0 ? '+' : '-'), abs_diff_10x / 10,
+                 abs_diff_10x % 10);
+        graphics_draw_text(ctx, think_score,
+                           fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                           GRect(width - 45, 2, 40, 20),
+                           GTextOverflowModeWordWrap, GTextAlignmentRight,
+                           NULL);
     }
 
     // Board background
@@ -183,6 +191,23 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
             graphics_fill_circle(ctx, p, STONE_RADIUS);
             if (stone == WHITE)
                 graphics_draw_circle(ctx, p, STONE_RADIUS);
+        }
+    }
+
+    // Last-move indicator: open ring in the opposite color on the most
+    // recently placed stone (white ring on black, black ring on white).
+    // Triple-stroked (~3px) since graphics_draw_circle is 1px per pass.
+    // Skipped after a pass or on a fresh board (last_move_placed == false).
+    if (last_move_placed) {
+        uint8_t last_stone = get_stone(last_move_row, last_move_col);
+        if (last_stone == BLACK || last_stone == WHITE) {
+            GPoint p = GPoint(BOARD_ORIGIN_X + last_move_col * CELL_SIZE,
+                              BOARD_ORIGIN_Y + last_move_row * CELL_SIZE);
+            graphics_context_set_stroke_color(
+                ctx, (last_stone == BLACK) ? COLOR_WHITE_STONE
+                                           : COLOR_BLACK_STONE);
+            for (int r = 3; r <= 5; r++)
+                graphics_draw_circle(ctx, p, r);
         }
     }
 }
