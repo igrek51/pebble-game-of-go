@@ -88,9 +88,7 @@ test('non-zero type is ignored (no reply)', () => {
     assert.strictEqual(msgs.length, 0);
 });
 
-/* --- opening quality: no first-line reply to a center opening --- */
-
-function onEdge(r, c) {
+/* --- opening quality: no first-line reply to a center opening --- */function onEdge(r, c) {
     return r === 0 || r === 8 || c === 0 || c === 8;
 }
 
@@ -104,6 +102,23 @@ test('opening reply to center stone is not on the edge', () => {
     assert.strictEqual(board[r[1] * 9 + r[2]], 0, 'reply must be on an empty point');
     assert.ok(!onEdge(r[1], r[2]),
         'white reply (' + r[1] + ',' + r[2] + ') must not be on the edge');
+});
+
+/* --- tactics: must capture a group in atari --- */
+
+test('takes the atari capture', () => {
+    loadPkjs();
+    // Black stone (4,4) has one liberty left at (4,5); White to move must
+    // capture there instead of playing elsewhere.
+    const board = new Array(81).fill(0);
+    board[4 * 9 + 4] = 1;
+    board[3 * 9 + 4] = 2;
+    board[5 * 9 + 4] = 2;
+    board[4 * 9 + 3] = 2;
+    const msgs = aiRequest({ 0: 0, 1: 2, 2: 4, 3: 4, 4: 0, 5: board, 6: validKo() });
+    const r = assertSingleReply(msgs);
+    assert.strictEqual(r[3], 0, 'white should play a stone, not pass');
+    assert.deepStrictEqual([r[1], r[2]], [4, 5], 'white must capture at (4,5)');
 });
 
 /* --- malformed input must still reply (hang regression) --- */

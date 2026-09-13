@@ -5,7 +5,7 @@ var MCTS_PASS_ROW = 9;
 var MCTS_PASS_COL = 9;
 var MCTS_POOL_SIZE = 10000;
 var MCTS_NO_NODE = -1;
-var MCTS_ITERATIONS = 300;
+var MCTS_ITERATIONS = 1000;
 var MCTS_MAX_PLAYOUT = 120;
 // Wall-clock budget for one AI move. The watch falls back to its local AI
 // after COMM_TIMEOUT_MS (12000ms), so the reply must leave well before that,
@@ -38,11 +38,42 @@ var mctsPath = [];
 var mctsPathLen = 0;
 
 var simTempBoard = [];
+var probeBoard = [];  // scratch for tactical simulations (capture/eye/self-atari tests)
+var probeKo = [];
 var gBoard = [];
 var gKoBoard = [];
 var gKoActive = false;
 
 var rngState = 12345;
+
+// Shared DFS mark buffer with generation counter: the hottest functions
+// (liberty counting, group removal) run millions of times per request, so
+// they must not allocate a visited array per call. Calls are strictly
+// sequential (no reentrancy), one buffer suffices. Monotonic, never reset.
+var dfsSeen = [];
+var dfsGen = 0;
+for (var _di = 0; _di < BOARD_SIZE * BOARD_SIZE; _di++)
+    dfsSeen[_di] = 0;
+
+// RAVE/AMAF: global all-moves-as-first statistics. amafV[color][idx] counts
+// playouts where `color` played idx; amafW counts those the mover eventually
+// won. Shared across the whole tree, so even a few hundred iterations rank
+// moves sensibly. Blend weight beta = K/(K+visits) fades toward pure UCT.
+var AMAF_K = 500;
+var amafV = [[], [], []];
+var amafW = [[], [], []];
+
+// Cost gates (out of 10) for the expensive simulation-based checks.
+// Pachi-style: tactics run probabilistically to bound playout cost.
+var TIER3_PROB10 = 1;
+var TACT_PEN_PROB10 = 3;
+
+// Move history of the current iteration (tree + playout applied stones),
+// used to update AMAF once the playout outcome is known.
+var playHistR = [];
+var playHistC = [];
+var playHistP = [];
+var playHistN = 0;
 
 var UCT_EXPLORE_TABLE = [
     0,   0,   117, 140, 155, 166, 175, 182, 189, 195, 201, 205, 210, 214, 218,
@@ -83,17 +114,45 @@ function initPools() {
             playBoard[i] = 0;
             playKoBoard[i] = 0;
             simTempBoard[i] = 0;
+            probeBoard[i] = 0;
+            probeKo[i] = 0;
         } else {
             simBoard[i] = 0;
             simKoBoard[i] = 0;
             playBoard[i] = 0;
             playKoBoard[i] = 0;
             simTempBoard[i] = 0;
+            probeBoard[i] = 0;
+            probeKo[i] = 0;
         }
+        amafV[BLACK][i] = 0;
+        amafW[BLACK][i] = 0;
+        amafV[WHITE][i] = 0;
+        amafW[WHITE][i] = 0;
     }
+    playHistN = 0;
     simKoActive = false;
     playKoActive = false;
     rngState = 12345;
+}
+
+function recordHistMove(r, c, p) {
+    if (r === MCTS_PASS_ROW || playHistN >= 128)
+        return;
+    playHistR[playHistN] = r;
+    playHistC[playHistN] = c;
+    playHistP[playHistN] = p;
+    playHistN++;
+}
+
+function updateAmaf(blackWon) {
+    for (var i = 0; i < playHistN; i++) {
+        var p = playHistP[i];
+        var idx = playHistR[i] * BOARD_SIZE + playHistC[i];
+        amafV[p][idx]++;
+        if ((p === BLACK) === (blackWon === 1))
+            amafW[p][idx]++;
+    }
 }
 
 function allocNode(moveRow, moveCol, player) {
@@ -173,12 +232,30 @@ function uct(childIdx, parentVisits) {
 
     var value = exploit + Math.floor(numerator / rootN);
 
-    // Progressive bias: shape knowledge steers selection while visit counts
-    // are low (the opening regime, where random playouts carry no signal)
-    // and fades as real statistics accumulate (so tactics overrule shape).
-    var shape = shapeScore(node.moveRow, node.moveCol);
-    if (shape !== 0 && v > 0)
-        value += Math.floor(shape / v);
+    // RAVE/AMAF blend with heuristic (shape) initialization, MoGo-style.
+    // Every move starts with PRIOR_W pseudo-observations at priorRate, so
+    // selection is guided before any playout data exists; real AMAF data
+    // dilutes the prior, and beta fades the whole blend toward pure UCT
+    // with visits. Pass uses the neutral 0.5 prior. This keeps all children
+    // (including pass) on one comparable scale.
+    var AMAF_PRIOR_W = 20;
+    var pr = 0.5;
+    if (node.moveRow !== MCTS_PASS_ROW) {
+        pr = 0.5 + shapeScore(node.moveRow, node.moveCol) / 2000;
+        if (pr < 0)
+            pr = 0;
+        if (pr > 1)
+            pr = 1;
+    }
+    var arNum = AMAF_PRIOR_W * pr;
+    var arDen = AMAF_PRIOR_W;
+    if (node.moveRow !== MCTS_PASS_ROW && node.player !== EMPTY) {
+        var ridx = node.moveRow * BOARD_SIZE + node.moveCol;
+        arNum += amafW[node.player][ridx];
+        arDen += amafV[node.player][ridx];
+    }
+    var beta = AMAF_K / (AMAF_K + v);
+    value = Math.floor((1 - beta) * value + beta * (arNum / arDen) * 1000);
 
     return value;
 }
@@ -189,9 +266,8 @@ function copyBoard(dst, src) {
 }
 
 function countLibertiesOn(b, startRow, startCol, color) {
-    var visited = [];
-    for (var i = 0; i < BOARD_SIZE * BOARD_SIZE; i++)
-        visited[i] = false;
+    dfsGen++;
+    var mark = dfsGen;
 
     var liberties = 0;
     var stack = [];
@@ -200,7 +276,7 @@ function countLibertiesOn(b, startRow, startCol, color) {
         return 0;
 
     stack.push({r: startRow, c: startCol});
-    visited[startIdx] = true;
+    dfsSeen[startIdx] = mark;
 
     var dr = [-1, 1, 0, 0];
     var dc = [0, 0, -1, 1];
@@ -211,14 +287,14 @@ function countLibertiesOn(b, startRow, startCol, color) {
             var nr = cell.r + dr[d];
             var nc = cell.c + dc[d];
             var nidx = boardIndex(nr, nc);
-            if (nidx < 0 || visited[nidx])
+            if (nidx < 0 || dfsSeen[nidx] === mark)
                 continue;
             var ns = b[nidx];
             if (ns === EMPTY) {
                 liberties++;
-                visited[nidx] = true;
+                dfsSeen[nidx] = mark;
             } else if (ns === color) {
-                visited[nidx] = true;
+                dfsSeen[nidx] = mark;
                 stack.push({r: nr, c: nc});
             }
         }
@@ -227,9 +303,8 @@ function countLibertiesOn(b, startRow, startCol, color) {
 }
 
 function removeGroupOn(b, startRow, startCol, color) {
-    var visited = [];
-    for (var i = 0; i < BOARD_SIZE * BOARD_SIZE; i++)
-        visited[i] = false;
+    dfsGen++;
+    var mark = dfsGen;
 
     var stack = [];
     var startIdx = boardIndex(startRow, startCol);
@@ -237,7 +312,7 @@ function removeGroupOn(b, startRow, startCol, color) {
         return;
 
     stack.push({r: startRow, c: startCol});
-    visited[startIdx] = true;
+    dfsSeen[startIdx] = mark;
 
     var dr = [-1, 1, 0, 0];
     var dc = [0, 0, -1, 1];
@@ -252,53 +327,23 @@ function removeGroupOn(b, startRow, startCol, color) {
             var nr = cell.r + dr[d];
             var nc = cell.c + dc[d];
             var nidx = boardIndex(nr, nc);
-            if (nidx < 0 || visited[nidx])
+            if (nidx < 0 || dfsSeen[nidx] === mark)
                 continue;
             if (b[nidx] === color) {
-                visited[nidx] = true;
+                dfsSeen[nidx] = mark;
                 stack.push({r: nr, c: nc});
             }
         }
     }
 }
 
-function wouldCaptureAtari(b, r, c, player) {
-    var opp = (player === BLACK) ? WHITE : BLACK;
-    var dr = [-1, 1, 0, 0];
-    var dc = [0, 0, -1, 1];
-    for (var d = 0; d < 4; d++) {
-        var nr = r + dr[d], nc = c + dc[d];
-        var nidx = boardIndex(nr, nc);
-        if (nidx >= 0 && b[nidx] === opp &&
-            countLibertiesOn(b, nr, nc, opp) === 1) {
-            return true;
-        }
-    }
-    return false;
-}
-
-function wouldEscapeAtari(b, r, c, player) {
-    var dr = [-1, 1, 0, 0];
-    var dc = [0, 0, -1, 1];
-    for (var d = 0; d < 4; d++) {
-        var nr = r + dr[d], nc = c + dc[d];
-        var nidx = boardIndex(nr, nc);
-        if (nidx >= 0 && b[nidx] === player &&
-            countLibertiesOn(b, nr, nc, player) === 1) {
-            return true;
-        }
-    }
-    return false;
-}
-
 function findLiberty(b, r, c) {
     var color = b[boardIndex(r, c)];
-    var visited = [];
-    for (var i = 0; i < BOARD_SIZE * BOARD_SIZE; i++)
-        visited[i] = false;
+    dfsGen++;
+    var mark = dfsGen;
 
     var stack = [{r: r, c: c}];
-    visited[boardIndex(r, c)] = true;
+    dfsSeen[boardIndex(r, c)] = mark;
 
     var dr = [-1, 1, 0, 0];
     var dc = [0, 0, -1, 1];
@@ -308,12 +353,12 @@ function findLiberty(b, r, c) {
         for (var d = 0; d < 4; d++) {
             var nr = cell.r + dr[d], nc = cell.c + dc[d];
             var nidx = boardIndex(nr, nc);
-            if (nidx < 0 || visited[nidx])
+            if (nidx < 0 || dfsSeen[nidx] === mark)
                 continue;
             if (b[nidx] === EMPTY) {
                 return {r: nr, c: nc};
             } else if (b[nidx] === color) {
-                visited[nidx] = true;
+                dfsSeen[nidx] = mark;
                 stack.push({r: nr, c: nc});
             }
         }
@@ -321,7 +366,7 @@ function findLiberty(b, r, c) {
     return {r: -1, c: -1};
 }
 
-function getLegalMovesOn(b, koB, koActive, player) {
+function getLegalMovesOn(b, koB, koActive, player, fast) {
     var opp = (player === BLACK) ? WHITE : BLACK;
     var moves = [];
     var dr = [-1, 1, 0, 0];
@@ -332,6 +377,14 @@ function getLegalMovesOn(b, koB, koActive, player) {
             var idx = boardIndex(row, col);
             if (b[idx] !== EMPTY)
                 continue;
+
+            // Fast mode (playouts only): occupied-check only; suicide/ko
+            // fallout is filtered by the retry loop on the selected move.
+            // Exact mode (tree/root): full legality simulation.
+            if (fast) {
+                moves.push({r: row, c: col});
+                continue;
+            }
 
             b[idx] = player;
 
@@ -497,6 +550,269 @@ function scoreBoard(b) {
     return blackTotal - whiteTotal;
 }
 
+// ---- shared tactics (tree expansion + playouts) ----
+
+function findMoveIndex(moves, r, c) {
+    for (var m = 0; m < moves.length; m++) {
+        if (moves[m].r === r && moves[m].c === c)
+            return m;
+    }
+    return -1;
+}
+
+// Does the move fill one of our own single-point eyes? Filling finished
+// eyes corrupts Tromp-Taylor playout scoring, so playouts avoid it (no
+// capture exception: eye-captures are vanishingly rare). Edge points never
+// count (they are territory plays, not eye fills). Simulation-free.
+function fillsOwnEye(b, r, c, player) {
+    var dr = [-1, 1, 0, 0];
+    var dc = [0, 0, -1, 1];
+    for (var d = 0; d < 4; d++) {
+        var nidx = boardIndex(r + dr[d], c + dc[d]);
+        if (nidx < 0)
+            return false;
+        if (b[nidx] !== player)
+            return false;
+    }
+    return true;
+}
+
+// Does the move leave our own new group in atari without capturing?
+function putsSelfInAtari(b, koB, koActiveFlag, player, r, c) {
+    copyBoard(probeBoard, b);
+    copyBoard(probeKo, koB);
+    var res = simTryPlace(probeBoard, probeKo, koActiveFlag, player, r, c);
+    if (!res.success)
+        return false;
+    var opp = (player === BLACK) ? WHITE : BLACK;
+    var before = 0, after = 0;
+    for (var i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
+        if (b[i] === opp)
+            before++;
+        if (probeBoard[i] === opp)
+            after++;
+    }
+    if (after < before)
+        return false;
+    return countLibertiesOn(probeBoard, r, c, player) === 1;
+}
+
+// Collect distinct empty liberties of the `color` group containing (sr,sc)
+// into `out` (local flood, bounded). Returns the count.
+function groupLiberties(b, sr, sc, color, out) {
+    dfsGen++;
+    var mark = dfsGen;
+    var stackR = [sr], stackC = [sc], top = 1;
+    dfsSeen[boardIndex(sr, sc)] = mark;
+    var n = 0;
+    var dr = [-1, 1, 0, 0];
+    var dc = [0, 0, -1, 1];
+    while (top > 0) {
+        top--;
+        var r = stackR[top], c = stackC[top];
+        for (var d = 0; d < 4; d++) {
+            var nr = r + dr[d], nc = c + dc[d];
+            var nidx = boardIndex(nr, nc);
+            if (nidx < 0 || dfsSeen[nidx] === mark)
+                continue;
+            if (b[nidx] === EMPTY) {
+                dfsSeen[nidx] = mark;
+                out[n] = {r: nr, c: nc};
+                n++;
+            } else if (b[nidx] === color) {
+                dfsSeen[nidx] = mark;
+                stackR[top] = nr;
+                stackC[top] = nc;
+                top++;
+            }
+        }
+    }
+    return n;
+}
+
+// Tier-1 scan factored out: index into `moves` of a killing reply to a
+// 1-lib enemy group, or -1. Used by the shared tactical finder and by the
+// root forced-capture override.
+function findAtariKill(b, player, moves) {
+    var opp = (player === BLACK) ? WHITE : BLACK;
+    for (var r = 0; r < BOARD_SIZE; r++) {
+        for (var c = 0; c < BOARD_SIZE; c++) {
+            var idx = boardIndex(r, c);
+            if (b[idx] === opp && countLibertiesOn(b, r, c, opp) === 1) {
+                var lib = findLiberty(b, r, c);
+                if (lib.r >= 0) {
+                    var m = findMoveIndex(moves, lib.r, lib.c);
+                    if (m >= 0)
+                        return m;
+                }
+            }
+        }
+    }
+    return -1;
+}
+
+// Tiered tactical move choice shared by expansion and playouts.
+// Tiers: (1) kill a 1-lib enemy group, (2) escape our 1-lib group,
+// (3) local 2-lib attack/defense around the last move (gated by probability
+// for speed). Returns the index into `moves`, or -1.
+function findTacticalMove(b, koB, koActive, player, moves, lastR, lastC) {
+    var opp = (player === BLACK) ? WHITE : BLACK;
+    var r, c, m;
+    // Tier 1: immediate atari kill.
+    m = findAtariKill(b, player, moves);
+    if (m >= 0)
+        return m;
+    // Tier 2: escape our 1-lib group.
+    for (r = 0; r < BOARD_SIZE; r++) {
+        for (c = 0; c < BOARD_SIZE; c++) {
+            var idx = boardIndex(r, c);
+            if (b[idx] === player && countLibertiesOn(b, r, c, player) === 1) {
+                var lib = findLiberty(b, r, c);
+                if (lib.r >= 0) {
+                    m = findMoveIndex(moves, lib.r, lib.c);
+                    if (m >= 0)
+                        return m;
+                }
+            }
+        }
+    }
+    // Tier 3: local 2-lib tactics around the last move (bounded window,
+    // probabilistic for speed — Pachi-style).
+    if ((mctsRng() % 10) < TIER3_PROB10) {
+        var libs = [];
+        var dr2 = [-1, 1, 0, 0];
+        var dc2 = [0, 0, -1, 1];
+        for (var wr = lastR - 2; wr <= lastR + 2; wr++) {
+            for (var wc = lastC - 2; wc <= lastC + 2; wc++) {
+                var widx = boardIndex(wr, wc);
+                if (widx < 0)
+                    continue;
+                var col = b[widx];
+                if (col !== player && col !== opp)
+                    continue;
+                if (countLibertiesOn(b, wr, wc, col) !== 2)
+                    continue;
+                var nlib = groupLiberties(b, wr, wc, col, libs);
+                for (var li = 0; li < nlib; li++) {
+                    m = findMoveIndex(moves, libs[li].r, libs[li].c);
+                    if (m < 0)
+                        continue;
+                    if (col === opp) {
+                        // Attack: enemy ends in atari (or captured) and we live.
+                        copyBoard(probeBoard, b);
+                        copyBoard(probeKo, koB);
+                        var res = simTryPlace(probeBoard, probeKo, koActive,
+                                              player, libs[li].r, libs[li].c);
+                        if (!res.success)
+                            continue;
+                        var captured = true;
+                        var inAtari = false;
+                        for (var d = 0; d < 4; d++) {
+                            var ni = boardIndex(libs[li].r + dr2[d],
+                                                libs[li].c + dc2[d]);
+                            if (ni < 0)
+                                continue;
+                            if (b[ni] === opp && probeBoard[ni] === opp) {
+                                captured = false;
+                                var nr = libs[li].r + dr2[d];
+                                var nc = libs[li].c + dc2[d];
+                                if (countLibertiesOn(probeBoard, nr, nc, opp) === 1)
+                                    inAtari = true;
+                            }
+                        }
+                        var ol = countLibertiesOn(probeBoard, libs[li].r,
+                                                  libs[li].c, player);
+                        if ((captured || inAtari) && ol >= 1)
+                            return m;
+                    } else {
+                        // Defense: any liberty that doesn't self-atari.
+                        if (!putsSelfInAtari(b, koB, koActive, player,
+                                             libs[li].r, libs[li].c))
+                            return m;
+                    }
+                }
+            }
+        }
+    }
+    return -1;
+}
+
+// Scored fallback choice: base score (randomness + locality + shape),
+// contender-only eye/self-atari penalties, hard pass discipline (pass only
+// when the board is nearly full, so playouts resolve instead of ending on
+// komi noise), and retry on failed placements. Applies the winning move to
+// (b, koB) and records it; returns the move index, or -1 for a pass turn.
+function chooseScoredMove(b, koB, koActiveObj, player, moves, lastR, lastC) {
+    var n = moves.length;
+    var scores = [];
+    var i, best = -99999;
+    for (i = 0; i < n; i++) {
+        var s;
+        if (moves[i].r === MCTS_PASS_ROW) {
+            s = (n <= 3) ? 2000 : (mctsRng() % 10) - 40;
+        } else {
+            s = mctsRng() % 10;
+            var dist = Math.abs(moves[i].r - lastR) +
+                       Math.abs(moves[i].c - lastC);
+            if (dist <= 2)
+                s += 20;
+            else if (dist <= 4)
+                s += 10;
+            var mr = moves[i].r, mc = moves[i].c;
+            var firstLine = (mr === 0 || mr === 8 || mc === 0 || mc === 8);
+            var secondLine = (mr === 1 || mr === 7 || mc === 1 || mc === 7);
+            if (firstLine)
+                s -= 25;
+            else if (secondLine)
+                s -= 8;
+            else if (mr >= 2 && mr <= 6 && mc >= 2 && mc <= 6)
+                s += 6;
+        }
+        scores[i] = s;
+        if (s > best)
+            best = s;
+    }
+    // Expensive tactical penalties for contenders only, applied
+    // probabilistically (Pachi-style cost gate).
+    var doPen = ((mctsRng() % 10) < TACT_PEN_PROB10);
+    for (i = 0; i < n; i++) {
+        if (moves[i].r === MCTS_PASS_ROW || scores[i] < best - 40)
+            continue;
+        if (!doPen)
+            continue;
+        if (fillsOwnEye(b, moves[i].r, moves[i].c, player))
+            scores[i] -= 100;
+        else if (putsSelfInAtari(b, koB, koActiveObj.flag, player, moves[i].r, moves[i].c))
+            scores[i] -= 60;
+    }
+    // Try in score order until a placement succeeds (ko can still reject).
+    var tried = [];
+    for (i = 0; i < n; i++)
+        tried[i] = false;
+    for (var attempt = 0; attempt < 6; attempt++) {
+        var bi = -1, bs = -99999;
+        for (i = 0; i < n; i++) {
+            if (!tried[i] && scores[i] > bs) {
+                bs = scores[i];
+                bi = i;
+            }
+        }
+        if (bi < 0)
+            return -1;
+        tried[bi] = true;
+        if (moves[bi].r === MCTS_PASS_ROW)
+            return bi;
+        var res = simTryPlace(b, koB, koActiveObj.flag, player,
+                              moves[bi].r, moves[bi].c);
+        if (res.success) {
+            koActiveObj.flag = res.koActive;
+            recordHistMove(moves[bi].r, moves[bi].c, player);
+            return bi;
+        }
+    }
+    return -1;
+}
+
 function mctsPlayout(initialPlayer) {
     copyBoard(playBoard, simBoard);
     copyBoard(playKoBoard, simKoBoard);
@@ -509,101 +825,50 @@ function mctsPlayout(initialPlayer) {
     var playoutMoves = 0;
 
     while (playoutMoves < MCTS_MAX_PLAYOUT) {
-        var moves = getLegalMovesOn(playBoard, playKoBoard, playKoActive, playPlayer);
+        var moves = getLegalMovesOn(playBoard, playKoBoard, playKoActive, playPlayer, true);
         if (moves.length === 0)
             break;
 
-        var moveIdx = -1;
-        var opp = (playPlayer === BLACK) ? WHITE : BLACK;
-
-        if (moveIdx < 0) {
-            for (var r = 0; r < BOARD_SIZE && moveIdx < 0; r++) {
-                for (var c = 0; c < BOARD_SIZE && moveIdx < 0; c++) {
-                    var idx = boardIndex(r, c);
-                    if (playBoard[idx] === playPlayer &&
-                        countLibertiesOn(playBoard, r, c, playPlayer) === 1) {
-                        var lib = findLiberty(playBoard, r, c);
-                        if (lib.r >= 0) {
-                            for (var m = 0; m < moves.length; m++) {
-                                if (moves[m].r === lib.r && moves[m].c === lib.c) {
-                                    moveIdx = m;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
+        // Tiered tactics first (atari kill/escape, local 2-lib fights),
+        // then the scored fallback. Both apply the move (or report a pass).
+        var moveIdx = findTacticalMove(playBoard, playKoBoard, playKoActive,
+                                       playPlayer, moves, playLastRow,
+                                       playLastCol);
+        if (moveIdx >= 0) {
+            var tm = moves[moveIdx];
+            var tres = simTryPlace(playBoard, playKoBoard, playKoActive,
+                                   playPlayer, tm.r, tm.c);
+            if (tres.success) {
+                playKoActive = tres.koActive;
+                playLastRow = tm.r;
+                playLastCol = tm.c;
+                playPasses = 0;
+                recordHistMove(tm.r, tm.c, playPlayer);
+                moveIdx = -2; // applied
+            } else {
+                moveIdx = -1; // ko-rejected: fall through to scored choice
             }
         }
 
-        if (moveIdx < 0) {
-            for (var r = 0; r < BOARD_SIZE && moveIdx < 0; r++) {
-                for (var c = 0; c < BOARD_SIZE && moveIdx < 0; c++) {
-                    var idx = boardIndex(r, c);
-                    if (playBoard[idx] === opp &&
-                        countLibertiesOn(playBoard, r, c, opp) === 1) {
-                        var lib = findLiberty(playBoard, r, c);
-                        if (lib.r >= 0) {
-                            for (var m = 0; m < moves.length; m++) {
-                                if (moves[m].r === lib.r && moves[m].c === lib.c) {
-                                    moveIdx = m;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
+        if (moveIdx === -1) {
+            var koBox = {flag: playKoActive};
+            var si = chooseScoredMove(playBoard, playKoBoard, koBox,
+                                      playPlayer, moves, playLastRow,
+                                      playLastCol);
+            playKoActive = koBox.flag;
+            if (si < 0) {
+                playPasses++;
+                if (playPasses >= 2)
+                    break;
+            } else if (moves[si].r === MCTS_PASS_ROW) {
+                playPasses++;
+                if (playPasses >= 2)
+                    break;
+            } else {
+                playPasses = 0;
+                playLastRow = moves[si].r;
+                playLastCol = moves[si].c;
             }
-        }
-
-        if (moveIdx < 0) {
-            var bestFallbackScore = -999;
-            for (var i = 0; i < moves.length; i++) {
-                var score = mctsRng() % 10;
-                if (moves[i].r !== MCTS_PASS_ROW) {
-                    var dist = Math.abs(moves[i].r - playLastRow) +
-                               Math.abs(moves[i].c - playLastCol);
-                    if (dist <= 2)
-                        score += 20;
-                    else if (dist <= 4)
-                        score += 10;
-                    // Shape bias: 1st-line moves are almost never good (no
-                    // room for eyes), 2nd line is weak, 3rd line and inside
-                    // is where opening and fighting belongs. Tactics bypass
-                    // this entirely via the atari capture/escape paths above,
-                    // so urgent edge replies still get played.
-                    var mr = moves[i].r, mc = moves[i].c;
-                    var firstLine = (mr === 0 || mr === 8 || mc === 0 || mc === 8);
-                    var secondLine = (mr === 1 || mr === 7 || mc === 1 || mc === 7);
-                    if (firstLine)
-                        score -= 25;
-                    else if (secondLine)
-                        score -= 8;
-                    else if (mr >= 2 && mr <= 6 && mc >= 2 && mc <= 6)
-                        score += 6;
-                }
-                if (score > bestFallbackScore) {
-                    bestFallbackScore = score;
-                    moveIdx = i;
-                }
-            }
-        }
-
-        if (moveIdx < 0)
-            moveIdx = Math.floor((mctsRng() / 65536) % moves.length);
-
-        var move = moves[moveIdx];
-
-        if (move.r === MCTS_PASS_ROW && move.c === MCTS_PASS_COL) {
-            playPasses++;
-            if (playPasses >= 2)
-                break;
-        } else {
-            playPasses = 0;
-            var result = simTryPlace(playBoard, playKoBoard, playKoActive, playPlayer, move.r, move.c);
-            playKoActive = result.koActive;
-            playLastRow = move.r;
-            playLastCol = move.c;
         }
 
         playPlayer = (playPlayer === BLACK) ? WHITE : BLACK;
@@ -656,6 +921,7 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
         if (iter % 500 === 0)
             console.log('pkjs: MCTS iter ' + iter + '/' + iterations + ' pool=' + nodePoolUsed);
         mctsPathLen = 0;
+        playHistN = 0;
         var nodeIdx = rootNode;
 
         copyBoard(simBoard, gBoard);
@@ -695,9 +961,12 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
                 simPasses++;
             } else {
                 simPasses = 0;
+                var mover = simPlayer;
                 var result = simTryPlace(simBoard, simKoBoard, simKoActive,
                                          simPlayer, bc.moveRow, bc.moveCol);
                 simKoActive = result.koActive;
+                if (result.success)
+                    recordHistMove(bc.moveRow, bc.moveCol, mover);
                 simLastRow = bc.moveRow;
                 simLastCol = bc.moveCol;
             }
@@ -712,8 +981,6 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
         var moves = getLegalMovesOn(simBoard, simKoBoard, simKoActive, simPlayer);
 
         var unexpandedIdx = -1;
-        var atariCaptureIdx = -1;
-        var atariEscapeIdx = -1;
 
         for (var m = 0; m < moves.length; m++) {
             var found = false;
@@ -726,26 +993,30 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
                 }
                 child = c.nextSibling;
             }
-            if (!found) {
-                if (atariCaptureIdx < 0 &&
-                    moves[m].r !== MCTS_PASS_ROW &&
-                    wouldCaptureAtari(simBoard, moves[m].r, moves[m].c, simPlayer)) {
-                    atariCaptureIdx = m;
-                } else if (atariEscapeIdx < 0 &&
-                           moves[m].r !== MCTS_PASS_ROW &&
-                           wouldEscapeAtari(simBoard, moves[m].r, moves[m].c, simPlayer)) {
-                    atariEscapeIdx = m;
-                }
-                if (unexpandedIdx < 0) {
-                    unexpandedIdx = m;
-                }
+            if (!found && unexpandedIdx < 0) {
+                unexpandedIdx = m;
             }
         }
 
-        if (atariCaptureIdx >= 0) {
-            unexpandedIdx = atariCaptureIdx;
-        } else if (atariEscapeIdx >= 0) {
-            unexpandedIdx = atariEscapeIdx;
+        // Shared tactical priority (atari kill/escape, local 2-lib fights)
+        // overrides the first-unexpanded default when it names an untried move.
+        var tactIdx = findTacticalMove(simBoard, simKoBoard, simKoActive,
+                                       simPlayer, moves, simLastRow,
+                                       simLastCol);
+        if (tactIdx >= 0) {
+            var already = false;
+            var ch = leaf.firstChild;
+            while (ch !== MCTS_NO_NODE && ch < MCTS_POOL_SIZE) {
+                var cn = nodePool[ch];
+                if (cn.moveRow === moves[tactIdx].r &&
+                    cn.moveCol === moves[tactIdx].c) {
+                    already = true;
+                    break;
+                }
+                ch = cn.nextSibling;
+            }
+            if (!already)
+                unexpandedIdx = tactIdx;
         }
 
         if (unexpandedIdx >= 0) {
@@ -765,10 +1036,14 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
                     simPasses++;
                 } else {
                     simPasses = 0;
+                    var emover = simPlayer;
                     var result = simTryPlace(simBoard, simKoBoard, simKoActive,
                                              simPlayer, moves[unexpandedIdx].r,
                                              moves[unexpandedIdx].c);
                     simKoActive = result.koActive;
+                    if (result.success)
+                        recordHistMove(moves[unexpandedIdx].r,
+                                       moves[unexpandedIdx].c, emover);
                     simLastRow = moves[unexpandedIdx].r;
                     simLastCol = moves[unexpandedIdx].c;
                 }
@@ -783,6 +1058,7 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
         }
 
         var resultVal = mctsPlayout(simPlayer);
+        updateAmaf(resultVal);
 
         for (var i = mctsPathLen - 1; i >= 0; i--) {
             var n = nodePool[mctsPath[i]];
@@ -915,6 +1191,24 @@ function handleAiRequest(payload) {
         return;
     }
     console.log('pkjs: player=' + currentPlayer + ' last=(' + lastRow + ',' + lastCol + ') passes=' + consecutivePasses);
+
+    // Forced capture shortcut: a hanging 1-lib enemy group is captured
+    // outright (ko-legality verified) instead of searched. At 300-1000
+    // iterations the tree cannot reliably rank tactics; capturing is right
+    // ~always (known limitation: snapback traps are not detected).
+    var rootMoves = getLegalMovesOn(gBoard, gKoBoard, gKoActive, currentPlayer);
+    var killIdx = findAtariKill(gBoard, currentPlayer, rootMoves);
+    if (killIdx >= 0) {
+        copyBoard(probeBoard, gBoard);
+        copyBoard(probeKo, gKoBoard);
+        var ktest = simTryPlace(probeBoard, probeKo, gKoActive, currentPlayer,
+                                rootMoves[killIdx].r, rootMoves[killIdx].c);
+        if (ktest.success) {
+            console.log('pkjs: forced capture at (' + rootMoves[killIdx].r + ',' + rootMoves[killIdx].c + ')');
+            sendMoveReply(rootMoves[killIdx].r, rootMoves[killIdx].c, 0);
+            return;
+        }
+    }
 
     console.log('pkjs: running MCTS with up to ' + MCTS_ITERATIONS + ' iterations...');
     var startTime = Date.now();
