@@ -88,6 +88,24 @@ test('non-zero type is ignored (no reply)', () => {
     assert.strictEqual(msgs.length, 0);
 });
 
+/* --- opening quality: no first-line reply to a center opening --- */
+
+function onEdge(r, c) {
+    return r === 0 || r === 8 || c === 0 || c === 8;
+}
+
+test('opening reply to center stone is not on the edge', () => {
+    loadPkjs();
+    const board = new Array(81).fill(0);
+    board[4 * 9 + 4] = 1; // black 1st move: tengen (center)
+    const msgs = aiRequest({ 0: 0, 1: 2, 2: 4, 3: 4, 4: 0, 5: board, 6: validKo() });
+    const r = assertSingleReply(msgs);
+    assert.strictEqual(r[3], 0, 'white should play a stone, not pass');
+    assert.strictEqual(board[r[1] * 9 + r[2]], 0, 'reply must be on an empty point');
+    assert.ok(!onEdge(r[1], r[2]),
+        'white reply (' + r[1] + ',' + r[2] + ') must not be on the edge');
+});
+
 /* --- malformed input must still reply (hang regression) --- */
 
 test('missing board replies pass (no throw, no hang)', () => {

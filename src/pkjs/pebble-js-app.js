@@ -113,6 +113,30 @@ function allocNode(moveRow, moveCol, player) {
     return idx;
 }
 
+// Static shape knowledge for move selection: 1st-line moves are almost
+// never good (no room for eyes), 2nd line is weak, 3rd line and inside is
+// where opening and fighting belongs. Pass is neutral.
+//
+// Magnitudes are deliberately huge: 300 iterations spread over ~80 root
+// children means ~4 visits each, so the winrate is pure lottery (0..1000)
+// and the explore term is near-identical for all siblings. Only a prior far
+// above that noise steers the opening; divided by visits it still fades
+// (e.g. -6000 is -1500 at 4 visits but -60 at 100) so real statistics and
+// tactics take over in fought variations.
+function shapeScore(r, c) {
+    if (r === MCTS_PASS_ROW)
+        return 0;
+    var firstLine = (r === 0 || r === 8 || c === 0 || c === 8);
+    var secondLine = (r === 1 || r === 7 || c === 1 || c === 7);
+    if (firstLine)
+        return -6000;
+    if (secondLine)
+        return -2000;
+    if (r >= 2 && r <= 6 && c >= 2 && c <= 6)
+        return 1200;
+    return 0;
+}
+
 function uct(childIdx, parentVisits) {
     if (childIdx === MCTS_NO_NODE)
         return -999999;
@@ -147,7 +171,16 @@ function uct(childIdx, parentVisits) {
     if (v >= 169) rootN = 13;
     if (v >= 196) rootN = 14;
 
-    return exploit + Math.floor(numerator / rootN);
+    var value = exploit + Math.floor(numerator / rootN);
+
+    // Progressive bias: shape knowledge steers selection while visit counts
+    // are low (the opening regime, where random playouts carry no signal)
+    // and fades as real statistics accumulate (so tactics overrule shape).
+    var shape = shapeScore(node.moveRow, node.moveCol);
+    if (shape !== 0 && v > 0)
+        value += Math.floor(shape / v);
+
+    return value;
 }
 
 function copyBoard(dst, src) {
@@ -534,10 +567,20 @@ function mctsPlayout(initialPlayer) {
                         score += 20;
                     else if (dist <= 4)
                         score += 10;
-                    if ((moves[i].r === 0 || moves[i].r === 8 ||
-                         moves[i].c === 0 || moves[i].c === 8) && dist > 2) {
-                        score -= 15;
-                    }
+                    // Shape bias: 1st-line moves are almost never good (no
+                    // room for eyes), 2nd line is weak, 3rd line and inside
+                    // is where opening and fighting belongs. Tactics bypass
+                    // this entirely via the atari capture/escape paths above,
+                    // so urgent edge replies still get played.
+                    var mr = moves[i].r, mc = moves[i].c;
+                    var firstLine = (mr === 0 || mr === 8 || mc === 0 || mc === 8);
+                    var secondLine = (mr === 1 || mr === 7 || mc === 1 || mc === 7);
+                    if (firstLine)
+                        score -= 25;
+                    else if (secondLine)
+                        score -= 8;
+                    else if (mr >= 2 && mr <= 6 && mc >= 2 && mc <= 6)
+                        score += 6;
                 }
                 if (score > bestFallbackScore) {
                     bestFallbackScore = score;
@@ -575,6 +618,31 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
     initPools();
 
     rootNode = allocNode(MCTS_PASS_ROW, MCTS_PASS_COL, EMPTY);
+
+    // Expand ALL root children up front. Without this the selection loop
+    // only ever descends through the single first-expanded child, so the
+    // tree grows as one degenerate line and the reply is just the first
+    // shuffled move (usually an edge point) instead of a searched choice.
+    // With real siblings at the root, UCT + progressive shape bias actually
+    // compare all opening moves by visits.
+    copyBoard(simBoard, gBoard);
+    copyBoard(simKoBoard, gKoBoard);
+    simKoActive = gKoActive;
+    var openingMoves = getLegalMovesOn(simBoard, simKoBoard, simKoActive, currentPlayer);
+    var root = nodePool[rootNode];
+    for (var om = 0; om < openingMoves.length; om++) {
+        var oc = allocNode(openingMoves[om].r, openingMoves[om].c, currentPlayer);
+        if (oc === MCTS_NO_NODE)
+            break;
+        if (root.firstChild === MCTS_NO_NODE) {
+            root.firstChild = oc;
+        } else {
+            var sib = root.firstChild;
+            while (nodePool[sib].nextSibling !== MCTS_NO_NODE)
+                sib = nodePool[sib].nextSibling;
+            nodePool[sib].nextSibling = oc;
+        }
+    }
 
     var startTime = Date.now();
     var iter = 0;
