@@ -4,6 +4,7 @@
 #include "logic/board.h"
 #include "ui/board_layer.h"
 #include "ui/dialogs.h"
+#include "ui/estimate_view.h"
 #include <pebble.h>
 
 static int selected_row = 0;
@@ -29,6 +30,8 @@ static void schedule_local_mcts(void);
 static void on_pkjs_move(int row, int col, bool is_pass);
 static void run_local_mcts(void);
 static void after_move_played(void);
+static void pause_ai_for_estimate(void);
+static void resume_ai_after_estimate(void);
 static void canvas_update_proc(Layer *layer, GContext *ctx);
 static void handle_click(ClickRecognizerRef recognizer, void *context);
 static void show_menu(void);
@@ -54,6 +57,31 @@ static void init_board_full(void) {
     if (game_mode == MODE_BLACK_AI || game_mode == MODE_AI_AI) {
         ai_move_timer = app_timer_register(300, ai_move_callback, NULL);
     }
+}
+
+// The estimate overlay is a frozen snapshot: stop any pending AI work while
+// it is open (an armed timer or an in-flight pkjs request), and restart it
+// on close. Without this the game would advance behind the overlay and the
+// preview would go stale.
+static void pause_ai_for_estimate(void) {
+    if (ai_move_timer) {
+        app_timer_cancel(ai_move_timer);
+        ai_move_timer = NULL;
+    }
+    if (local_mcts_timer) {
+        app_timer_cancel(local_mcts_timer);
+        local_mcts_timer = NULL;
+    }
+    comm_cancel();
+    if (ui_state == AI_THINKING || ui_state == LOCAL_THINKING)
+        ui_state = VIEW;
+    APP_LOG(APP_LOG_LEVEL_INFO, "game: AI paused for estimate");
+}
+
+static void resume_ai_after_estimate(void) {
+    APP_LOG(APP_LOG_LEVEL_INFO, "game: AI resumed after estimate");
+    layer_mark_dirty(s_canvas_layer);
+    after_move_played(); // re-arms the AI timer iff it is an AI turn
 }
 
 static void do_pass_ui(void) {
@@ -325,6 +353,11 @@ static void menu_select_callback(int index, void *context) {
         if (selected_row >= 0)
             ui_state = SELECTING_COL;
     } else if (index == 3) {
+        pause_ai_for_estimate();
+        hide_menu();
+        estimate_view_show(resume_ai_after_estimate);
+        return;
+    } else if (index == 4) {
         hide_menu();
         show_scroll_dialog(
             "Rules of Go:\n"
@@ -355,7 +388,7 @@ static void menu_select_callback(int index, void *context) {
             "compensate "
             "for going second.\n");
         return;
-    } else if (index == 4) {
+    } else if (index == 5) {
         hide_menu();
         window_stack_pop_all(true);
         return;
@@ -367,18 +400,20 @@ static void menu_select_callback(int index, void *context) {
 static void show_menu(void) {
     if (!s_menu_window) {
         s_menu_window = window_create();
-        static SimpleMenuItem items[5];
+        static SimpleMenuItem items[6];
         items[0] =
             (SimpleMenuItem){.title = "PASS", .callback = menu_select_callback};
         items[1] = (SimpleMenuItem){.title = "NEW GAME",
                                     .callback = menu_select_callback};
         items[2] =
             (SimpleMenuItem){.title = "HINT", .callback = menu_select_callback};
-        items[3] = (SimpleMenuItem){.title = "RULES",
+        items[3] = (SimpleMenuItem){.title = "ESTIMATE",
                                     .callback = menu_select_callback};
-        items[4] =
+        items[4] = (SimpleMenuItem){.title = "RULES",
+                                    .callback = menu_select_callback};
+        items[5] =
             (SimpleMenuItem){.title = "EXIT", .callback = menu_select_callback};
-        menu_sections[0] = (SimpleMenuSection){.num_items = 5, .items = items};
+        menu_sections[0] = (SimpleMenuSection){.num_items = 6, .items = items};
         s_menu_layer = simple_menu_layer_create(
             layer_get_bounds(window_get_root_layer(s_menu_window)),
             s_menu_window, menu_sections, 1, NULL);

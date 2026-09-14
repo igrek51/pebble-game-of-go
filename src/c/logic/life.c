@@ -5,6 +5,14 @@
 // large open region can always fight or escape, so it must never be removed
 // by static analysis. 8 points still covers all realistic eyespace on 9x9.
 #define DEAD_REGION_MAX 8
+// Preview tint shows settled areas only: huge open frameworks are scored
+// (Chinese rules count them) but rendered neutral — tinting a 60-point moyo
+// solid black midgame would be a lie. Endgame territories fit easily.
+#define PREVIEW_TINT_MAX 15
+// Influence reach: points farther than this (Manhattan, walls block) from
+// every stone are neutral. Explorer uses 5; Sabaki's default is 6.
+#define INFLUENCE_DIST_MAX 5
+#define INFLUENCE_INF 99
 // Removal is iterated because each removal can enclose (or expose) more.
 #define DEAD_ROUNDS_MAX 10
 
@@ -288,5 +296,161 @@ int score_board_smart_10x(uint8_t *b) {
     remove_dead_stones(w);
     int bs = 0, bt = 0, ws = 0, wt = 0;
     board_area_parts(w, &bs, &bt, &ws, &wt);
+    return (bs + bt) * 10 - ((ws + wt) * 10 + 75);
+}
+
+int score_preview(uint8_t *b, uint8_t *owner_out, bool *dead_out) {
+    static bool visited[BOARD_SIZE * BOARD_SIZE];
+    static int queue_r[BOARD_SIZE * BOARD_SIZE];
+    static int queue_c[BOARD_SIZE * BOARD_SIZE];
+    static int region_cells[BOARD_SIZE * BOARD_SIZE];
+
+    uint8_t w[BOARD_SIZE * BOARD_SIZE];
+    memcpy(w, b, sizeof(w));
+    remove_dead_stones(w);
+
+    for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
+        dead_out[i] = (b[i] != EMPTY && w[i] == EMPTY);
+        owner_out[i] = w[i];
+    }
+
+    memset(visited, 0, sizeof(visited));
+    const int dr[] = {-1, 1, 0, 0};
+    const int dc[] = {0, 0, -1, 1};
+    int bs = 0, bt = 0, ws = 0, wt = 0;
+
+    for (int sr = 0; sr < BOARD_SIZE; sr++) {
+        for (int sc = 0; sc < BOARD_SIZE; sc++) {
+            int sidx = board_index(sr, sc);
+            if (w[sidx] != EMPTY || visited[sidx])
+                continue;
+
+            int head = 0, tail = 0, rn = 0;
+            queue_r[tail] = sr;
+            queue_c[tail] = sc;
+            tail++;
+            visited[sidx] = true;
+
+            bool touches_black = false;
+            bool touches_white = false;
+
+            while (head < tail) {
+                int r = queue_r[head];
+                int c = queue_c[head];
+                head++;
+                region_cells[rn++] = r * BOARD_SIZE + c;
+
+                for (int d = 0; d < 4; d++) {
+                    int nr = r + dr[d];
+                    int nc = c + dc[d];
+                    int nidx = board_index(nr, nc);
+                    if (nidx < 0)
+                        continue;
+                    uint8_t ns = w[nidx];
+                    if (ns == BLACK) {
+                        touches_black = true;
+                    } else if (ns == WHITE) {
+                        touches_white = true;
+                    } else if (!visited[nidx]) {
+                        visited[nidx] = true;
+                        queue_r[tail] = nr;
+                        queue_c[tail] = nc;
+                        tail++;
+                    }
+                }
+            }
+
+            uint8_t owner = EMPTY;
+            if (touches_black && !touches_white) {
+                owner = BLACK;
+                bt += rn;
+            } else if (touches_white && !touches_black) {
+                owner = WHITE;
+                wt += rn;
+            }
+            // Score counts the whole region (rules); tint only settled ones.
+            if (rn > PREVIEW_TINT_MAX)
+                owner = EMPTY;
+            for (int k = 0; k < rn; k++)
+                owner_out[region_cells[k]] = owner;
+        }
+    }
+
+    for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
+        if (w[i] == BLACK)
+            bs++;
+        else if (w[i] == WHITE)
+            ws++;
+    }
+    return (bs + bt) * 10 - ((ws + wt) * 10 + 75);
+}
+
+static void influence_dist(uint8_t *w, uint8_t color, int8_t *dist) {
+    static int16_t queue[BOARD_SIZE * BOARD_SIZE];
+    for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++)
+        dist[i] = INFLUENCE_INF;
+    int head = 0, tail = 0;
+    for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
+        if (w[i] == color) {
+            dist[i] = 0;
+            queue[tail++] = (int16_t)i;
+        }
+    }
+    const int dr[] = {-1, 1, 0, 0};
+    const int dc[] = {0, 0, -1, 1};
+    while (head < tail) {
+        int cur = queue[head++];
+        int r = cur / BOARD_SIZE, c = cur % BOARD_SIZE;
+        if (dist[cur] >= INFLUENCE_DIST_MAX)
+            continue;
+        for (int d = 0; d < 4; d++) {
+            int nidx = board_index(r + dr[d], c + dc[d]);
+            if (nidx < 0 || w[nidx] != EMPTY || dist[nidx] <= dist[cur] + 1)
+                continue;
+            dist[nidx] = (int8_t)(dist[cur] + 1);
+            queue[tail++] = (int16_t)nidx;
+        }
+    }
+}
+
+void find_dead_map(uint8_t *b, bool *dead_out) {
+    uint8_t w[BOARD_SIZE * BOARD_SIZE];
+    memcpy(w, b, sizeof(w));
+    remove_dead_stones(w);
+    for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++)
+        dead_out[i] = (b[i] != EMPTY && w[i] == EMPTY);
+}
+
+int score_influence_10x(uint8_t *b, uint8_t *owner_out) {    static int8_t dist_b[BOARD_SIZE * BOARD_SIZE];
+    static int8_t dist_w[BOARD_SIZE * BOARD_SIZE];
+
+    uint8_t w[BOARD_SIZE * BOARD_SIZE];
+    memcpy(w, b, sizeof(w));
+    remove_dead_stones(w);
+
+    influence_dist(w, BLACK, dist_b);
+    influence_dist(w, WHITE, dist_w);
+
+    int bs = 0, bt = 0, ws = 0, wt = 0;
+    for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
+        uint8_t owner;
+        if (w[i] == BLACK) {
+            owner = BLACK;
+            bs++;
+        } else if (w[i] == WHITE) {
+            owner = WHITE;
+            ws++;
+        } else if (dist_b[i] < dist_w[i]) {
+            owner = BLACK;
+            bt++;
+        } else if (dist_w[i] < dist_b[i]) {
+            owner = WHITE;
+            wt++;
+        } else {
+            owner = EMPTY;
+        }
+        if (owner_out)
+            owner_out[i] = owner;
+    }
     return (bs + bt) * 10 - ((ws + wt) * 10 + 75);
 }

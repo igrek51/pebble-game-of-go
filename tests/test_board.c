@@ -55,6 +55,12 @@ void test_dead_invasion_removed(void);
 void test_contact_fight_kept(void);
 void test_shared_region_kept(void);
 void test_smart_score(void);
+void test_score_preview(void);
+void test_preview_open_board(void);
+void test_influence_agrees_settled(void);
+void test_influence_open_single(void);
+void test_influence_walls_and_ties(void);
+void test_influence_11_invariant(void);
 
 int main() {    printf("Running board logic tests...\n");
     test_liberties();
@@ -64,6 +70,12 @@ int main() {    printf("Running board logic tests...\n");
     test_contact_fight_kept();
     test_shared_region_kept();
     test_smart_score();
+    test_score_preview();
+    test_preview_open_board();
+    test_influence_agrees_settled();
+    test_influence_open_single();
+    test_influence_walls_and_ties();
+    test_influence_11_invariant();
     printf("All board logic tests passed!\n");
     return 0;
 }
@@ -170,4 +182,138 @@ void test_smart_score() {
     set_stone(0, 0, WHITE);
     // 1-1 stones, no territory either way
     ASSERT(score_board_smart_10x(board) == -75);
+}
+
+// Preview map: dead stone flagged, interior owned, score consistent.
+void test_score_preview() {
+    printf("  Testing score preview map...\n");
+    init_board_logic();
+    for (int i = 0; i <= 3; i++) {
+        set_stone(0, i, BLACK);
+        set_stone(3, i, BLACK);
+        set_stone(i, 0, BLACK);
+        set_stone(i, 3, BLACK);
+    }
+    set_stone(1, 1, WHITE);
+    uint8_t owner[81];
+    bool dead[81];
+    int diff = score_preview(board, owner, dead);
+    ASSERT(diff == (12 + 4 + 65) * 10 - 75);
+    ASSERT(dead[board_index(1, 1)]);          // the invader is dead
+    ASSERT(!dead[board_index(0, 0)]);         // wall lives
+    ASSERT(owner[board_index(1, 2)] == BLACK); // small interior is tinted
+    ASSERT(owner[board_index(8, 8)] == EMPTY); // big open exterior stays neutral
+    ASSERT(owner[board_index(1, 1)] == BLACK); // freed point counts as territory
+}
+
+// Open fighting boards get no tint wash: unsettled regions stay neutral.
+void test_preview_open_board() {
+    printf("  Testing preview on open board...\n");
+    init_board_logic();
+    set_stone(5, 4, BLACK);
+    set_stone(4, 4, WHITE);
+    set_stone(2, 4, BLACK);
+    uint8_t owner[81];
+    bool dead[81];
+    int diff = score_preview(board, owner, dead);
+    ASSERT(diff == (2 - 1) * 10 - 75);
+    for (int i = 0; i < 81; i++) {
+        ASSERT(!dead[i]);
+        if (board[i] == EMPTY)
+            ASSERT(owner[i] == EMPTY);
+    }
+}
+
+// Influence agrees with flood where settled, but only reaches 5 points
+// out: far unreachable exterior stays neutral instead of counted.
+void test_influence_agrees_settled() {
+    printf("  Testing influence agrees on settled board...\n");
+    init_board_logic();
+    for (int i = 0; i <= 3; i++) {
+        set_stone(0, i, BLACK);
+        set_stone(3, i, BLACK);
+        set_stone(i, 0, BLACK);
+        set_stone(i, 3, BLACK);
+    }
+    set_stone(1, 1, WHITE);
+    uint8_t owner[81];
+    int diff = score_influence_10x(board, owner);
+    ASSERT(diff == 585); // 12 stones + 54 owned empties, komi 7.5
+    ASSERT(owner[board_index(1, 2)] == BLACK); // sealed interior
+    ASSERT(owner[board_index(4, 4)] == BLACK); // near exterior
+    ASSERT(owner[board_index(8, 8)] == EMPTY); // too far, neutral
+    // NULL map still returns the number (banner path).
+    ASSERT(score_influence_10x(board, NULL) == diff);
+}
+
+// Single stone: diamond radius 5 clipped by edges (60 - 4 = 56 points).
+void test_influence_open_single() {
+    printf("  Testing influence around single stone...\n");
+    init_board_logic();
+    set_stone(4, 4, BLACK);
+    uint8_t owner[81];
+    int diff = score_influence_10x(board, owner);
+    ASSERT(diff == (1 + 56) * 10 - 75);
+    ASSERT(owner[board_index(4, 4)] == BLACK);
+    ASSERT(owner[board_index(4, 0)] == BLACK);  // dist 4
+    ASSERT(owner[board_index(0, 4)] == BLACK);  // dist 4
+    ASSERT(owner[board_index(0, 0)] == EMPTY);  // dist 8, out of reach
+    ASSERT(owner[board_index(4, 5)] == BLACK);  // dist 1
+}
+
+// Walls block influence; ties are neutral.
+void test_influence_walls_and_ties() {
+    printf("  Testing influence walls and ties...\n");
+    init_board_logic();
+    for (int c = 0; c < 9; c++)
+        set_stone(4, c, BLACK);
+    set_stone(0, 0, WHITE);
+    uint8_t owner[81];
+    score_influence_10x(board, owner);
+    ASSERT(owner[board_index(2, 4)] == BLACK); // white 6 away, black 2
+    ASSERT(owner[board_index(1, 0)] == WHITE); // white 1, black 3
+    ASSERT(owner[board_index(0, 1)] == WHITE); // white 1, black 3
+
+    init_board_logic();
+    set_stone(4, 3, BLACK);
+    set_stone(4, 5, WHITE);
+    score_influence_10x(board, owner);
+    ASSERT(owner[board_index(4, 4)] == EMPTY); // 1-1 tie, contested
+    ASSERT(owner[board_index(4, 2)] == BLACK);
+    ASSERT(owner[board_index(4, 6)] == WHITE);
+}
+
+// The 1:1 invariant: the number always equals the map sum (+komi).
+static void check_invariant(void) {
+    uint8_t owner[81];
+    int diff = score_influence_10x(board, owner);
+    int bs = 0, ws = 0;
+    for (int i = 0; i < 81; i++) {
+        if (board[i] == BLACK)
+            bs++;
+        else if (board[i] == WHITE)
+            ws++;
+        else if (owner[i] == BLACK)
+            bs++;
+        else if (owner[i] == WHITE)
+            ws++;
+    }
+    ASSERT(diff == bs * 10 - (ws * 10 + 75));
+}
+
+void test_influence_11_invariant() {
+    printf("  Testing influence 1:1 invariant...\n");
+    init_board_logic();
+    check_invariant(); // empty
+    set_stone(4, 4, BLACK);
+    set_stone(0, 0, WHITE);
+    check_invariant(); // scattered
+    set_stone(4, 3, BLACK);
+    set_stone(4, 5, WHITE);
+    set_stone(3, 4, BLACK);
+    set_stone(5, 4, WHITE);
+    check_invariant(); // cross fight, ties included
+    for (int c = 0; c < 9; c++)
+        set_stone(8, c, (c % 2) ? WHITE : BLACK);
+    check_invariant(); // back rank + center
 }

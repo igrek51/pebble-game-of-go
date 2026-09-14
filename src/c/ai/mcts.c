@@ -653,10 +653,10 @@ void mcts_get_move_coords(uint16_t node_idx, int *r, int *c) {
 }
 
 int estimate_score_10x_logic(void) {
-    // Live score banner: dead-stone-aware area score (Benson + flood fill),
-    // replacing the old nearest-stone influence heuristic. Dead invaders no
-    // longer count their stones or steal territory in the estimate.
-    return score_board_smart_10x(board);
+    // Live score banner: influence ownership (dead removal + spheres of
+    // influence), so open positions show a meaningful estimate instead of
+    // going blank. Same map the overlay tints, hence always 1:1 with it.
+    return score_influence_10x(board, NULL);
 }
 
 void suggest_hint_logic(uint8_t current_player, int last_row, int last_col,
