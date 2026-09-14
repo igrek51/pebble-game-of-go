@@ -29,6 +29,10 @@ static SimpleMenuSection menu_sections[1];
 static Window *s_mode_window = NULL;
 static SimpleMenuLayer *s_mode_layer = NULL;
 static SimpleMenuSection mode_sections[1];
+static Window *s_errmenu_window = NULL;
+static SimpleMenuLayer *s_errmenu_layer = NULL;
+static SimpleMenuSection errmenu_sections[1];
+static SimpleMenuItem errmenu_items[2];
 
 static void init_board_full(void);
 static void ai_move_callback(void *data);
@@ -36,7 +40,10 @@ static void on_pkjs_move(int row, int col, int is_pass);
 static void after_move_played(void);
 static bool next_is_ai_turn(void);
 static void ai_unavailable(void);
-static void request_ai_move(void);static void pause_ai_for_estimate(void);
+static void request_ai_move(void);
+static void show_ai_error_menu(const char *reason);
+static void hide_ai_error_menu(void);
+static void pause_ai_for_estimate(void);
 static void resume_ai_after_estimate(void);
 static void canvas_update_proc(Layer *layer, GContext *ctx);
 static void handle_click(ClickRecognizerRef recognizer, void *context);
@@ -273,13 +280,13 @@ static bool next_is_ai_turn(void) {
 }
 
 // The companion is the only AI engine: when it delivers nothing (timeout,
-// failed send, no Bluetooth), show an error and return to the turn banner.
-// Any action button (UP/DOWN/SELECT) retries the request from there.
+// failed send, no Bluetooth), offer choices instead of a vanishing toast.
+// BACK dismisses (any action button retries from the banner afterwards).
 static void ai_unavailable(void) {
-    APP_LOG(APP_LOG_LEVEL_INFO, "game: AI unavailable, awaiting retry");
+    APP_LOG(APP_LOG_LEVEL_INFO, "game: AI unavailable, offering choices");
     ui_state = VIEW;
     layer_mark_dirty(s_canvas_layer);
-    show_error_dialog("AI unavailable - retry SELECT");
+    show_ai_error_menu("AI unavailable");
 }
 
 static void on_pkjs_move(int row, int col, int is_pass) {
@@ -305,10 +312,10 @@ static void on_pkjs_move(int row, int col, int is_pass) {
     }
 
     if (is_pass == 2) {
-        // The companion found no move: report, don't silently pass.
+        // The companion found no move: offer choices, don't silently pass.
         APP_LOG(APP_LOG_LEVEL_ERROR, "game: pkjs reports no move");
         layer_mark_dirty(s_canvas_layer);
-        show_error_dialog("AI found no move - retry SELECT");
+        show_ai_error_menu("AI found no move");
         return;
     }
 
@@ -320,7 +327,7 @@ static void on_pkjs_move(int row, int col, int is_pass) {
             APP_LOG(APP_LOG_LEVEL_ERROR,
                     "game: refusing early pkjs pass (moves=%d)", moves_made);
             layer_mark_dirty(s_canvas_layer);
-            show_error_dialog("AI must not pass yet - retry SELECT");
+            show_ai_error_menu("AI must not pass yet");
             return;
         }
         APP_LOG(APP_LOG_LEVEL_INFO, "game: pkjs chose PASS");
@@ -549,6 +556,51 @@ static void show_menu(void) {
 static void hide_menu(void) {
     if (s_menu_window)
         window_stack_remove(s_menu_window, true);
+}
+
+// Error options menu: unlike the auto-dismissing error toast, this stays
+// open until the user chooses. Retry sends a fresh companion request (a new
+// RNG seed, so it explores different lines); Pass plays a pass for the
+// current side so the game can always move on; BACK dismisses, leaving the
+// turn banner (any action button retries from there).
+static void errmsg_select_callback(int index, void *context) {
+    (void)context;
+    hide_ai_error_menu();
+    if (index == 0) {
+        APP_LOG(APP_LOG_LEVEL_INFO, "game: error menu -> retry");
+        request_ai_move();
+    } else {
+        APP_LOG(APP_LOG_LEVEL_INFO, "game: error menu -> pass");
+        do_pass_ui();
+        layer_mark_dirty(s_canvas_layer);
+    }
+}
+
+static void show_ai_error_menu(const char *reason) {
+    if (!s_errmenu_window) {
+        s_errmenu_window = window_create();
+        errmenu_items[0] = (SimpleMenuItem){.title = "Retry",
+                                            .callback = errmsg_select_callback};
+        errmenu_items[1] = (SimpleMenuItem){.title = "Pass",
+                                            .subtitle = "Play pass instead",
+                                            .callback = errmsg_select_callback};
+        errmenu_sections[0] = (SimpleMenuSection){
+            .num_items = 2, .items = errmenu_items};
+        s_errmenu_layer = simple_menu_layer_create(
+            layer_get_bounds(window_get_root_layer(s_errmenu_window)),
+            s_errmenu_window, errmenu_sections, 1, NULL);
+        layer_add_child(window_get_root_layer(s_errmenu_window),
+                        simple_menu_layer_get_layer(s_errmenu_layer));
+    }
+    // Reason goes in the Retry subtitle: section headers don't render.
+    errmenu_items[0].subtitle = reason;
+    layer_mark_dirty(simple_menu_layer_get_layer(s_errmenu_layer));
+    window_stack_push(s_errmenu_window, true);
+}
+
+static void hide_ai_error_menu(void) {
+    if (s_errmenu_window)
+        window_stack_remove(s_errmenu_window, true);
 }
 
 static void mode_select_callback(int index, void *context) {
