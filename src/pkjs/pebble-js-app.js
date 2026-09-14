@@ -7,7 +7,12 @@ var MCTS_POOL_SIZE = 10000;
 var MCTS_NO_NODE = -1;
 var MCTS_ITERATIONS = 1000;
 var MCTS_MAX_PLAYOUT = 120;
-// Wall-clock budget for one AI move. The watch falls back to its local AI
+// Passing is strictly prohibited before this many moves have been made
+// (passes possible starting with the 41st move). Mirrored in main.c
+// (AI_PASS_MIN_MOVES); when the search wants to pass earlier, or finds no
+// move at all, an error reply (isPass 2) is sent so the watch reports it
+// instead of silently passing.
+var PKJS_PASS_MIN_MOVES = 40;// Wall-clock budget for one AI move. The watch falls back to its local AI
 // after COMM_TIMEOUT_MS (72000ms), so the reply must leave well before that,
 // including AppMessage transport time. Phone JS engines are much slower than
 // desktop V8 (300 iterations measured ~1.7s on V8), so mctsRun() stops early
@@ -46,6 +51,12 @@ var gKoActive = false;
 
 var rngState = 12345;
 
+// Request counter: seeds each search differently (deterministic per boot)
+// so that a manual retry after an error explores different lines instead
+// of reproducing the identical result forever. Unit tests reload the module
+// per case, so every test still starts from the same seed.
+var requestSeq = 0;
+
 // Shared DFS mark buffer with generation counter: the hottest functions
 // (liberty counting, group removal) run millions of times per request, so
 // they must not allocate a visited array per call. Calls are strictly
@@ -62,6 +73,15 @@ for (var _di = 0; _di < BOARD_SIZE * BOARD_SIZE; _di++)
 var AMAF_K = 500;
 var amafV = [[], [], []];
 var amafW = [[], [], []];
+
+// Pass prior depends on board fullness: in near-finished positions (few
+// empties) pass competes normally at 0.5; in open positions it is crippled
+// to PASS_OPEN_PRIOR, because playout noise otherwise lets it outrank
+// struggling stone moves and produce unjustified early passes. Set per
+// request in mctsRun().
+var PASS_OPEN_PRIOR = 0.05;
+var ENDGAME_EMPTIES = 12;
+var passPrior = 0.5;
 
 // Cost gates (out of 10) for the expensive simulation-based checks.
 // Pachi-style: tactics run probabilistically to bound playout cost.
@@ -133,7 +153,6 @@ function initPools() {
     playHistN = 0;
     simKoActive = false;
     playKoActive = false;
-    rngState = 12345;
 }
 
 function recordHistMove(r, c, p) {
@@ -239,7 +258,7 @@ function uct(childIdx, parentVisits) {
     // with visits. Pass uses the neutral 0.5 prior. This keeps all children
     // (including pass) on one comparable scale.
     var AMAF_PRIOR_W = 20;
-    var pr = 0.5;
+    var pr = passPrior;
     if (node.moveRow !== MCTS_PASS_ROW) {
         pr = 0.5 + shapeScore(node.moveRow, node.moveCol) / 2000;
         if (pr < 0)
@@ -882,6 +901,17 @@ function mctsPlayout(initialPlayer) {
 function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses) {
     initPools();
 
+    rngState = (12345 + requestSeq * 7919) | 0;
+    requestSeq++;
+
+    // Fullness gate for the pass prior (see above).
+    var empties = 0;
+    for (var ei = 0; ei < BOARD_SIZE * BOARD_SIZE; ei++) {
+        if (gBoard[ei] === EMPTY)
+            empties++;
+    }
+    passPrior = (empties <= ENDGAME_EMPTIES) ? 0.5 : PASS_OPEN_PRIOR;
+
     rootNode = allocNode(MCTS_PASS_ROW, MCTS_PASS_COL, EMPTY);
 
     // Expand ALL root children up front. Without this the selection loop
@@ -1210,10 +1240,9 @@ Pebble.addEventListener('appmessage', function(e) {
         handleAiRequest(e && e.payload);
     } catch (err) {
         // Last-resort guarantee: any unexpected throw still unblocks the
-        // watch (it treats the pass as a normal pass, local ko/suicide rules
-        // still apply on its side).
-        console.log('pkjs: handler threw, replying pass: ' + (err && err.message));
-        sendMoveReply(0, 0, 1);
+        // watch with an error (never a silent pass).
+        console.log('pkjs: handler threw, replying error: ' + (err && err.message));
+        sendMoveReply(0, 0, 2);
     }
 });
 
@@ -1227,16 +1256,16 @@ function handleAiRequest(payload) {
 
     console.log('pkjs: parsing board data...');
     if (!copyBytesFromPayload(payload[5], 81, gBoard)) {
-        console.log('pkjs: invalid board payload, replying pass');
-        sendMoveReply(0, 0, 1);
+        console.log('pkjs: invalid board payload, replying error');
+        sendMoveReply(0, 0, 2);
         return;
     }
 
     var koRaw = payload[6];
     var koSrc = (koRaw instanceof ArrayBuffer) ? new Uint8Array(koRaw) : koRaw;
     if (!copyBytesFromPayload(koSrc, 81, gKoBoard)) {
-        console.log('pkjs: invalid ko payload, replying pass');
-        sendMoveReply(0, 0, 1);
+        console.log('pkjs: invalid ko payload, replying error');
+        sendMoveReply(0, 0, 2);
         return;
     }
     gKoActive = (koSrc[81] | 0) !== 0;
@@ -1245,12 +1274,13 @@ function handleAiRequest(payload) {
     var lastRow = payload[2] | 0;
     var lastCol = payload[3] | 0;
     var consecutivePasses = payload[4] | 0;
+    var movesMade = payload[7] | 0;
     if (currentPlayer !== BLACK && currentPlayer !== WHITE) {
-        console.log('pkjs: invalid player=' + payload[1] + ', replying pass');
-        sendMoveReply(0, 0, 1);
+        console.log('pkjs: invalid player=' + payload[1] + ', replying error');
+        sendMoveReply(0, 0, 2);
         return;
     }
-    console.log('pkjs: player=' + currentPlayer + ' last=(' + lastRow + ',' + lastCol + ') passes=' + consecutivePasses);
+    console.log('pkjs: player=' + currentPlayer + ' last=(' + lastRow + ',' + lastCol + ') passes=' + consecutivePasses + ' moves=' + movesMade);
 
     // Forced capture shortcut: a hanging 1-lib enemy group is captured
     // outright (ko-legality verified) instead of searched. At 300-1000
@@ -1281,8 +1311,8 @@ function handleAiRequest(payload) {
 
     var moveRow, moveCol, isPass;
     if (best === MCTS_NO_NODE) {
-        console.log('pkjs: no best move, passing');
-        isPass = 1;
+        console.log('pkjs: no best move, replying error');
+        isPass = 2;
         moveRow = 0;
         moveCol = 0;
     } else {
@@ -1290,7 +1320,15 @@ function handleAiRequest(payload) {
         moveRow = node.moveRow;
         moveCol = node.moveCol;
         isPass = (moveRow === MCTS_PASS_ROW && moveCol === MCTS_PASS_COL) ? 1 : 0;
-        console.log('pkjs: best move=(' + moveRow + ',' + moveCol + ') visits=' + node.visits + ' wins=' + node.wins + ' pass=' + isPass);
+        if (isPass === 1 && movesMade < PKJS_PASS_MIN_MOVES) {
+            // Early passes are prohibited: report instead of playing one.
+            console.log('pkjs: search wants early pass (moves=' + movesMade + '), replying error');
+            isPass = 2;
+            moveRow = 0;
+            moveCol = 0;
+        } else {
+            console.log('pkjs: best move=(' + moveRow + ',' + moveCol + ') visits=' + node.visits + ' wins=' + node.wins + ' pass=' + isPass);
+        }
     }
 
     sendMoveReply(moveRow, moveCol, isPass);

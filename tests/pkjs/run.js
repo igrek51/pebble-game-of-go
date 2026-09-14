@@ -63,7 +63,7 @@ function assertSingleReply(msgs) {
     const r = msgs[0];
     assert.strictEqual(r[0], 1, 'reply type must be 1');
     assert.ok(Number.isInteger(r[1]) && Number.isInteger(r[2]), 'row/col must be ints');
-    assert.ok(r[3] === 0 || r[3] === 1, 'is_pass must be 0/1');
+    assert.ok(r[3] === 0 || r[3] === 1 || r[3] === 2, 'is_pass must be 0/1/2');
     return r;
 }
 
@@ -104,9 +104,7 @@ test('opening reply to center stone is not on the edge', () => {
         'white reply (' + r[1] + ',' + r[2] + ') must not be on the edge');
 });
 
-/* --- pass discipline: never early, always when finished --- */
-
-test('does not pass on an empty board', () => {
+/* --- pass discipline: never early, always when finished --- */test('does not pass on an empty board', () => {
     loadPkjs();
     const msgs = aiRequest({ 0: 0, 1: 1, 2: 4, 3: 4, 4: 0, 5: new Array(81).fill(0), 6: validKo() });
     const r = assertSingleReply(msgs);
@@ -119,18 +117,44 @@ test('does not pass midgame', () => {
     board[2 * 9 + 2] = 1; board[2 * 9 + 3] = 1; board[3 * 9 + 2] = 1;
     board[6 * 9 + 6] = 2; board[6 * 9 + 5] = 2; board[5 * 9 + 6] = 2;
     board[4 * 9 + 4] = 1;
-    const msgs = aiRequest({ 0: 0, 1: 2, 2: 4, 3: 4, 4: 0, 5: board, 6: validKo() });
+    const msgs = aiRequest({ 0: 0, 1: 2, 2: 4, 3: 4, 4: 0, 5: board, 6: validKo(), 7: 20 });
     const r = assertSingleReply(msgs);
     assert.strictEqual(r[3], 0, 'must play in an open midgame, not pass');
 });
 
-test('passes a full board', () => {
+test('does not pass a dense fight (pass-prior regression)', () => {
+    // Dense chaotic board where every stone move looks bad in playouts:
+    // the pass child used to outrank them all. Pass must stay crippled
+    // while the board is open.
+    loadPkjs();
+    let s = 7;
+    const rnd = () => (s = (s * 1664525 + 1013904223) >>> 0) / 4294967296;
+    const board = new Array(81).fill(0);
+    for (let i = 0; i < 81; i++) {
+        if (rnd() < 0.7)
+            board[i] = rnd() < 0.5 ? 1 : 2;
+    }
+    const msgs = aiRequest({ 0: 0, 1: 2, 2: 4, 3: 4, 4: 0, 5: board, 6: validKo(), 7: 30 });
+    const r = assertSingleReply(msgs);
+    assert.strictEqual(r[3], 0, 'must play in a dense fight, not pass');
+});
+
+test('passes a full board late game', () => {
     loadPkjs();
     const board = [];
     for (let i = 0; i < 81; i++) board[i] = (i % 2) + 1;
-    const msgs = aiRequest({ 0: 0, 1: 1, 2: 0, 3: 0, 4: 1, 5: board, 6: validKo() });
+    const msgs = aiRequest({ 0: 0, 1: 1, 2: 0, 3: 0, 4: 1, 5: board, 6: validKo(), 7: 80 });
     const r = assertSingleReply(msgs);
     assert.strictEqual(r[3], 1, 'must pass when no legal move exists');
+});
+
+test('refuses early pass with an error, even on a full board', () => {
+    loadPkjs();
+    const board = [];
+    for (let i = 0; i < 81; i++) board[i] = (i % 2) + 1;
+    const msgs = aiRequest({ 0: 0, 1: 1, 2: 0, 3: 0, 4: 1, 5: board, 6: validKo(), 7: 10 });
+    const r = assertSingleReply(msgs);
+    assert.strictEqual(r[3], 2, 'early pass must be reported as error, not played');
 });
 
 /* --- tactics: must capture a group in atari --- */test('takes the atari capture', () => {
@@ -148,34 +172,50 @@ test('passes a full board', () => {
     assert.deepStrictEqual([r[1], r[2]], [4, 5], 'white must capture at (4,5)');
 });
 
-/* --- malformed input must still reply (hang regression) --- */
+/* --- retry explores: consecutive identical requests stay valid --- */
 
-test('missing board replies pass (no throw, no hang)', () => {
+test('repeated request stays a valid reply', () => {
+    loadPkjs();
+    const board = new Array(81).fill(0);
+    board[4 * 9 + 4] = 1;
+    const payload = { 0: 0, 1: 2, 2: 4, 3: 4, 4: 0, 5: board, 6: validKo(), 7: 1 };
+    const r1 = assertSingleReply(aiRequest(payload));
+    const r2 = assertSingleReply(aiRequest(payload));
+    for (const r of [r1, r2]) {
+        assert.ok(r[3] === 0 || r[3] === 1 || r[3] === 2, 'tri-state reply');
+        if (r[3] === 0)
+            assert.strictEqual(board[r[1] * 9 + r[2]], 0, 'stone reply must be legal');
+    }
+});
+
+/* --- malformed input must still reply (hang regression), as error --- */
+
+test('missing board replies error (no throw, no hang)', () => {
     loadPkjs();
     const msgs = aiRequest({ 0: 0, 1: 1, 2: 4, 3: 4, 4: 0 });
     const r = assertSingleReply(msgs);
-    assert.strictEqual(r[3], 1, 'must be a pass');
+    assert.strictEqual(r[3], 2, 'must be an error');
 });
 
-test('short board replies pass', () => {
+test('short board replies error', () => {
     loadPkjs();
     const msgs = aiRequest({ 0: 0, 1: 1, 2: 4, 3: 4, 4: 0, 5: [1, 2], 6: [0] });
     const r = assertSingleReply(msgs);
-    assert.strictEqual(r[3], 1, 'must be a pass');
+    assert.strictEqual(r[3], 2, 'must be an error');
 });
 
-test('missing ko replies pass', () => {
+test('missing ko replies error', () => {
     loadPkjs();
     const msgs = aiRequest({ 0: 0, 1: 1, 2: 4, 3: 4, 4: 0, 5: validBoard() });
     const r = assertSingleReply(msgs);
-    assert.strictEqual(r[3], 1, 'must be a pass');
+    assert.strictEqual(r[3], 2, 'must be an error');
 });
 
-test('invalid player replies pass', () => {
+test('invalid player replies error', () => {
     loadPkjs();
     const msgs = aiRequest({ 0: 0, 1: 7, 2: 4, 3: 4, 4: 0, 5: validBoard(), 6: validKo() });
     const r = assertSingleReply(msgs);
-    assert.strictEqual(r[3], 1, 'must be a pass');
+    assert.strictEqual(r[3], 2, 'must be an error');
 });
 
 test('missing payload is ignored without throwing', () => {

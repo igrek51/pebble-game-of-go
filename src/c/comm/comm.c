@@ -19,7 +19,7 @@ static void comm_trigger_fallback(void) {
     APP_LOG(APP_LOG_LEVEL_INFO, "comm: FALLBACK to local MCTS (pkjs unavailable/timed out)");
     comm_ai_move_callback cb = s_pending_callback;
     s_pending_callback = NULL;
-    cb(-1, -1, false);
+    cb(-1, -1, 0);
 }
 
 // Never read t->value->int32 without a type check first: the union field is
@@ -65,13 +65,13 @@ static void comm_inbox_handler(DictionaryIterator *iter, void *context) {
     int row = 0, col = 0, pass_int = 0;
     tuple_get_int(pass_tuple, &pass_int);
     if (!tuple_get_int(row_tuple, &row) || !tuple_get_int(col_tuple, &col)) {
-        // Malformed reply: fail fast to local MCTS instead of sitting in
-        // AI_THINKING (buttons dead) until the 4s timeout fires.
+        // Malformed reply: fail fast instead of sitting in AI_THINKING
+        // until the timeout fires.
         APP_LOG(APP_LOG_LEVEL_ERROR, "comm: inbox msg missing/invalid row/col, fallback");
         s_request_active = false;
         comm_ai_move_callback malformed_cb = s_pending_callback;
         s_pending_callback = NULL;
-        malformed_cb(-1, -1, false);
+        malformed_cb(-1, -1, 0);
         return;
     }
 
@@ -79,10 +79,13 @@ static void comm_inbox_handler(DictionaryIterator *iter, void *context) {
     comm_ai_move_callback cb = s_pending_callback;
     s_pending_callback = NULL;
 
-    bool is_pass = (pass_int != 0);
+    // Tri-state result: 0 = move, 1 = pass, 2 = error/no-move.
+    int is_pass = pass_int;
+    if (is_pass < 0 || is_pass > 2)
+        is_pass = 0;
 
-    if (row == MCTS_PASS_ROW && col == MCTS_PASS_COL)
-        is_pass = true;
+    if (row == MCTS_PASS_ROW && col == MCTS_PASS_COL && is_pass == 0)
+        is_pass = 1;
 
     APP_LOG(APP_LOG_LEVEL_INFO, "comm: GOT MOVE from pkjs: (%d,%d) pass=%d", row, col, is_pass);
     cb(row, col, is_pass);
@@ -118,14 +121,14 @@ bool comm_is_connected(void) {
 }
 
 void comm_request_ai_move(uint8_t current_player, int last_row, int last_col,
-                          int consecutive_passes,
+                          int consecutive_passes, int moves_made,
                           comm_ai_move_callback callback) {
-    APP_LOG(APP_LOG_LEVEL_INFO, "comm: request AI move (player=%d last=(%d,%d) passes=%d)",
-            current_player, last_row, last_col, consecutive_passes);
+    APP_LOG(APP_LOG_LEVEL_INFO, "comm: request AI move (player=%d last=(%d,%d) passes=%d moves=%d)",
+            current_player, last_row, last_col, consecutive_passes, moves_made);
 
     if (!bluetooth_connection_service_peek()) {
         APP_LOG(APP_LOG_LEVEL_INFO, "comm: no BT, immediate fallback");
-        callback(-1, -1, false);
+        callback(-1, -1, 0);
         return;
     }
 
@@ -138,7 +141,7 @@ void comm_request_ai_move(uint8_t current_player, int last_row, int last_col,
         APP_LOG(APP_LOG_LEVEL_INFO, "comm: outbox_begin failed (%d), fallback", result);
         s_request_active = false;
         s_pending_callback = NULL;
-        callback(-1, -1, false);
+        callback(-1, -1, 0);
         return;
     }
 
@@ -148,6 +151,7 @@ void comm_request_ai_move(uint8_t current_player, int last_row, int last_col,
     dict_write_int32(iter, 2, last_row);
     dict_write_int32(iter, 3, last_col);
     dict_write_int32(iter, 4, consecutive_passes);
+    dict_write_int32(iter, 7, moves_made);
 
     dict_write_data(iter, 5, board, BOARD_SIZE * BOARD_SIZE);
 

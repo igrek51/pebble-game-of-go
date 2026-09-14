@@ -32,7 +32,7 @@ static SimpleMenuSection mode_sections[1];
 
 static void init_board_full(void);
 static void ai_move_callback(void *data);
-static void on_pkjs_move(int row, int col, bool is_pass);
+static void on_pkjs_move(int row, int col, int is_pass);
 static void after_move_played(void);
 static bool next_is_ai_turn(void);
 static void ai_unavailable(void);
@@ -49,6 +49,10 @@ static void hide_mode_select(void);
 // Auto-saved after every move/pass/mode change and on exit; auto-loaded on
 // open. New Game (or game-over dismiss) persists the fresh board, so a
 // reopen never resurrects a finished game.
+// Passing is strictly prohibited before this many moves have been made
+// (i.e. passes are possible starting with the 41st move). Mirrored in
+// pebble-js-app.js (PKJS_PASS_MIN_MOVES); the watch re-checks every reply.
+#define AI_PASS_MIN_MOVES 40
 #define SAVE_MAGIC 0x474F3939
 #define SAVE_VERSION 1
 enum {
@@ -278,7 +282,7 @@ static void ai_unavailable(void) {
     show_error_dialog("AI unavailable - retry SELECT");
 }
 
-static void on_pkjs_move(int row, int col, bool is_pass) {
+static void on_pkjs_move(int row, int col, int is_pass) {
     APP_LOG(APP_LOG_LEVEL_INFO, "game: pkjs responded: (%d,%d) pass=%d", row, col, is_pass);
     if (s_req_epoch != s_ai_epoch) {
         // Stale reply: the game moved on while the AI was thinking (e.g.
@@ -300,7 +304,25 @@ static void on_pkjs_move(int row, int col, bool is_pass) {
         return;
     }
 
+    if (is_pass == 2) {
+        // The companion found no move: report, don't silently pass.
+        APP_LOG(APP_LOG_LEVEL_ERROR, "game: pkjs reports no move");
+        layer_mark_dirty(s_canvas_layer);
+        show_error_dialog("AI found no move - retry SELECT");
+        return;
+    }
+
     if (is_pass || (row == MCTS_PASS_ROW && col == MCTS_PASS_COL)) {
+        if (moves_made < AI_PASS_MIN_MOVES) {
+            // Early passes are prohibited (defense in depth: pkjs enforces
+            // the same rule, but a stale/foreign reply must not end the
+            // opening either). Stay on the AI turn for a retry.
+            APP_LOG(APP_LOG_LEVEL_ERROR,
+                    "game: refusing early pkjs pass (moves=%d)", moves_made);
+            layer_mark_dirty(s_canvas_layer);
+            show_error_dialog("AI must not pass yet - retry SELECT");
+            return;
+        }
         APP_LOG(APP_LOG_LEVEL_INFO, "game: pkjs chose PASS");
         do_pass_ui();
         layer_mark_dirty(s_canvas_layer);
@@ -341,7 +363,7 @@ static void ai_move_callback(void *data) {
         layer_mark_dirty(s_canvas_layer);
         s_req_epoch = ++s_ai_epoch;
         comm_request_ai_move(current_player, last_move_row, last_move_col,
-                             consecutive_passes, on_pkjs_move);
+                             consecutive_passes, moves_made, on_pkjs_move);
     } else {
         APP_LOG(APP_LOG_LEVEL_INFO, "game: BT disconnected, AI unavailable");
         ai_unavailable();
