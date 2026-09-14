@@ -31,7 +31,6 @@ void mcts_init_zobrist(void);
 void mcts_run(int iterations, uint8_t current_player, int last_row, int last_col, int consecutive_passes);
 uint16_t mcts_get_best_move(void);
 void mcts_get_move_coords(uint16_t node_idx, int *r, int *c);
-bool mcts_find_forced_capture(uint8_t player, int *r, int *c);
 
 // Hint functions
 void suggest_hint_logic(uint8_t current_player, int last_row, int last_col, int *best_row, int *best_col);

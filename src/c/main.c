@@ -11,7 +11,6 @@ static int selected_row = 0;
 static int selected_col = 0;
 
 static AppTimer *ai_move_timer = NULL;
-static AppTimer *local_mcts_timer = NULL;
 
 // AI request epoch: every new pkjs request stamps s_req_epoch; any game
 // event that makes a pending reply stale (pass, stone, new game, estimate
@@ -33,12 +32,11 @@ static SimpleMenuSection mode_sections[1];
 
 static void init_board_full(void);
 static void ai_move_callback(void *data);
-static void local_mcts_callback(void *data);
-static void schedule_local_mcts(void);
 static void on_pkjs_move(int row, int col, bool is_pass);
-static void run_local_mcts(void);
 static void after_move_played(void);
-static void pause_ai_for_estimate(void);
+static bool next_is_ai_turn(void);
+static void ai_unavailable(void);
+static void request_ai_move(void);static void pause_ai_for_estimate(void);
 static void resume_ai_after_estimate(void);
 static void canvas_update_proc(Layer *layer, GContext *ctx);
 static void handle_click(ClickRecognizerRef recognizer, void *context);
@@ -142,12 +140,7 @@ static void init_board_full(void) {
         app_timer_cancel(ai_move_timer);
         ai_move_timer = NULL;
     }
-    if (local_mcts_timer) {
-        app_timer_cancel(local_mcts_timer);
-        local_mcts_timer = NULL;
-    }
     comm_cancel();
-    s_ai_epoch++; // abandon any in-flight AI reply
 
     if (game_mode == MODE_BLACK_AI || game_mode == MODE_AI_AI) {
         ai_move_timer = app_timer_register(300, ai_move_callback, NULL);
@@ -163,13 +156,9 @@ static void pause_ai_for_estimate(void) {
         app_timer_cancel(ai_move_timer);
         ai_move_timer = NULL;
     }
-    if (local_mcts_timer) {
-        app_timer_cancel(local_mcts_timer);
-        local_mcts_timer = NULL;
-    }
     comm_cancel();
     s_ai_epoch++; // abandon any in-flight AI reply
-    if (ui_state == AI_THINKING || ui_state == LOCAL_THINKING)
+    if (ui_state == AI_THINKING)
         ui_state = VIEW;
     APP_LOG(APP_LOG_LEVEL_INFO, "game: AI paused for estimate");
 }
@@ -262,20 +251,31 @@ static bool try_place_stone_ui(int row, int col) {
 
 static void after_move_played(void) {
     APP_LOG(APP_LOG_LEVEL_INFO, "game: after_move_played -> next is %s, player=%d",
-            ((game_mode == MODE_BLACK_AI && current_player == BLACK) ||
-             (game_mode == MODE_WHITE_AI && current_player == WHITE) ||
-             (game_mode == MODE_AI_AI)) ? "AI" : "human",
-            current_player);
+            next_is_ai_turn() ? "AI" : "human", current_player);
     layer_mark_dirty(s_canvas_layer);
 
-    bool next_is_ai = (game_mode == MODE_BLACK_AI && current_player == BLACK) ||
-                      (game_mode == MODE_WHITE_AI && current_player == WHITE) ||
-                      (game_mode == MODE_AI_AI);
-    if (next_is_ai) {
+    if (next_is_ai_turn()) {
         if (ai_move_timer)
             app_timer_cancel(ai_move_timer);
         ai_move_timer = app_timer_register(300, ai_move_callback, NULL);
     }
+}
+
+// True when the side to move is driven by the companion AI.
+static bool next_is_ai_turn(void) {
+    return (game_mode == MODE_BLACK_AI && current_player == BLACK) ||
+           (game_mode == MODE_WHITE_AI && current_player == WHITE) ||
+           (game_mode == MODE_AI_AI);
+}
+
+// The companion is the only AI engine: when it delivers nothing (timeout,
+// failed send, no Bluetooth), show an error and return to the turn banner.
+// Any action button (UP/DOWN/SELECT) retries the request from there.
+static void ai_unavailable(void) {
+    APP_LOG(APP_LOG_LEVEL_INFO, "game: AI unavailable, awaiting retry");
+    ui_state = VIEW;
+    layer_mark_dirty(s_canvas_layer);
+    show_error_dialog("AI unavailable - retry SELECT");
 }
 
 static void on_pkjs_move(int row, int col, bool is_pass) {
@@ -289,12 +289,14 @@ static void on_pkjs_move(int row, int col, bool is_pass) {
     ui_state = VIEW;
 
     if (row < 0) {
-        APP_LOG(APP_LOG_LEVEL_INFO, "game: pkjs unavailable, running local MCTS directly");
+        // Transport failure (or no Bluetooth): no local engine anymore,
+        // surface it and let the user retry.
+        APP_LOG(APP_LOG_LEVEL_INFO, "game: pkjs unavailable, showing error");
         if (!can_make_legal_move(current_player)) {
             do_pass_ui();
             return;
         }
-        schedule_local_mcts();
+        ai_unavailable();
         return;
     }
 
@@ -310,62 +312,13 @@ static void on_pkjs_move(int row, int col, bool is_pass) {
     after_move_played();
 }
 
-// Deferred on-watch computation: show the "Pebble is thinking" banner first
-// (the layer only repaints once the event loop regains control), then run
-// the synchronous local MCTS from the timer callback.
-static void schedule_local_mcts(void) {
-    APP_LOG(APP_LOG_LEVEL_INFO, "game: scheduling local MCTS");
-    ui_state = LOCAL_THINKING;
-    layer_mark_dirty(s_canvas_layer);
-    if (local_mcts_timer)
-        app_timer_cancel(local_mcts_timer);
-    local_mcts_timer = app_timer_register(100, local_mcts_callback, NULL);
-}
-
-static void local_mcts_callback(void *data) {
-    local_mcts_timer = NULL;
-    if (ui_state != LOCAL_THINKING)
-        return;
-    ui_state = VIEW;
-    run_local_mcts();
-}
-
-static void run_local_mcts(void) {
-    APP_LOG(APP_LOG_LEVEL_INFO, "game: running local MCTS (player=%d, iters=%d)",
-            current_player, MCTS_ITERATIONS);
-    int fr, fc;
-    if (mcts_find_forced_capture(current_player, &fr, &fc)) {
-        APP_LOG(APP_LOG_LEVEL_INFO, "game: local forced capture at (%d,%d)", fr, fc);
-        try_place_stone_ui(fr, fc);
-        after_move_played();
-        return;
-    }
-    mcts_run(MCTS_ITERATIONS, current_player, last_move_row, last_move_col,
-             consecutive_passes);
-    uint16_t best_child = mcts_get_best_move();
-    if (best_child == MCTS_NO_NODE) {
-        APP_LOG(APP_LOG_LEVEL_INFO, "game: local MCTS returned no node, passing");
-        do_pass_ui();
-    } else {
-        int r, c;
-        mcts_get_move_coords(best_child, &r, &c);
-        if (r == MCTS_PASS_ROW && c == MCTS_PASS_COL) {
-            APP_LOG(APP_LOG_LEVEL_INFO, "game: local MCTS chose PASS");
-            do_pass_ui();
-        } else {
-            APP_LOG(APP_LOG_LEVEL_INFO, "game: local MCTS chose (%d,%d)", r, c);
-            try_place_stone_ui(r, c);
-        }
-    }
-    after_move_played();
-}
-
 static void ai_move_callback(void *data) {
     ai_move_timer = NULL;
     APP_LOG(APP_LOG_LEVEL_INFO, "game: ai_move_callback (player=%d, ui_state=%d)",
             current_player, ui_state);
     if (ui_state != VIEW)
         return;
+    comm_cancel(); // retrying supersedes any stray in-flight request
 
     if (!can_make_legal_move(current_player)) {
         APP_LOG(APP_LOG_LEVEL_INFO, "game: no legal moves, passing");
@@ -390,9 +343,19 @@ static void ai_move_callback(void *data) {
         comm_request_ai_move(current_player, last_move_row, last_move_col,
                              consecutive_passes, on_pkjs_move);
     } else {
-        APP_LOG(APP_LOG_LEVEL_INFO, "game: BT disconnected, local MCTS");
-        schedule_local_mcts();
+        APP_LOG(APP_LOG_LEVEL_INFO, "game: BT disconnected, AI unavailable");
+        ai_unavailable();
     }
+}
+
+// (Re)starts the AI request path; safe to call as a retry (cancels any
+// armed timer first so a second request can never overlap the first).
+static void request_ai_move(void) {
+    if (ai_move_timer) {
+        app_timer_cancel(ai_move_timer);
+        ai_move_timer = NULL;
+    }
+    ai_move_callback(NULL);
 }
 
 static void canvas_update_proc(Layer *layer, GContext *ctx) {
@@ -412,16 +375,20 @@ static void handle_click(ClickRecognizerRef recognizer, void *context) {
     // Stone placement stays locked while the AI works (placing as the AI's
     // color would corrupt the turn order), but BACK always opens the menu
     // so the game never feels hung: PASS/EXIT/etc. stay available.
-    if (ui_state == AI_THINKING || ui_state == LOCAL_THINKING) {
+    if (ui_state == AI_THINKING) {
         if (button == BUTTON_ID_BACK)
             show_menu();
         return;
     }
 
     if (ui_state == VIEW) {
-        if (button == BUTTON_ID_BACK)
+        if (button == BUTTON_ID_BACK) {
             show_menu();
-        else {
+        } else if (next_is_ai_turn()) {
+            // AI's turn (e.g. after a failed request): any action button
+            // retries the companion request.
+            request_ai_move();
+        } else {
             ui_state = SELECTING_ROW;
             selected_row = last_move_row;
             if (button == BUTTON_ID_UP && selected_row > 0)
@@ -475,7 +442,7 @@ static void menu_select_callback(int index, void *context) {
         show_mode_select();
         return;
     } else if (index == 2) {
-        if (ui_state == AI_THINKING || ui_state == LOCAL_THINKING) {
+        if (ui_state == AI_THINKING) {
             // A hint would run a second AI search and hand the cursor to
             // the human on the AI's turn: refuse while thinking.
             hide_menu();
@@ -631,15 +598,11 @@ static void init(void) {
 }
 
 static void deinit(void) {
-    // EXIT is reachable while the AI thinks now: disarm everything first so
+    // EXIT is reachable while the AI thinks: disarm everything first so
     // no timer/phone callback can fire on torn-down windows and layers.
     if (ai_move_timer) {
         app_timer_cancel(ai_move_timer);
         ai_move_timer = NULL;
-    }
-    if (local_mcts_timer) {
-        app_timer_cancel(local_mcts_timer);
-        local_mcts_timer = NULL;
     }
     comm_cancel();
     save_game_state();

@@ -741,34 +741,6 @@ uint16_t mcts_get_best_move(void) {
     return best_stone;
 }
 
-// Forced capture shortcut for the fallback engine: a hanging 1-lib enemy
-// group is taken outright (ko-legality verified on scratch) instead of
-// searched. With only a handful of iterations the tree cannot reliably rank
-// tactics. Known limitation: snapback traps are not detected.
-bool mcts_find_forced_capture(uint8_t player, int *r, int *c) {
-    static uint8_t tmp_b[BOARD_SIZE * BOARD_SIZE];
-    static uint8_t tmp_k[BOARD_SIZE * BOARD_SIZE];
-    uint8_t move_rows[82], move_cols[82];
-    int n = get_legal_moves_on(board, ko_board, ko_active, player, move_rows,
-                               move_cols);
-    for (int m = 0; m < n; m++) {
-        if (move_rows[m] == MCTS_PASS_ROW)
-            continue;
-        if (!would_capture_atari(board, move_rows[m], move_cols[m], player))
-            continue;
-        memcpy(tmp_b, board, sizeof(board));
-        memcpy(tmp_k, ko_board, sizeof(ko_board));
-        bool tmp_ko = ko_active;
-        if (sim_try_place(tmp_b, tmp_k, &tmp_ko, player, move_rows[m],
-                          move_cols[m])) {
-            *r = move_rows[m];
-            *c = move_cols[m];
-            return true;
-        }
-    }
-    return false;
-}
-
 void mcts_get_move_coords(uint16_t node_idx, int *r, int *c) {    if (node_idx < MCTS_POOL_SIZE) {
         *r = mcts_pool[node_idx].move_row;
         *c = mcts_pool[node_idx].move_col;

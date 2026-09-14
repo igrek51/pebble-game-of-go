@@ -32,14 +32,11 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
     graphics_context_set_text_color(ctx, status_text_color);
 
     char left_text[32];
-    // Thinking labels need a smaller font; the live score stays visible on
-    // the right exactly like on a human turn.
-    bool thinking = (ui_state == AI_THINKING || ui_state == LOCAL_THINKING);
+    // The thinking label needs a smaller font; the live score stays visible
+    // on the right exactly like on a human turn.
+    bool thinking = (ui_state == AI_THINKING);
     if (thinking) {
-        if (ui_state == AI_THINKING)
-            snprintf(left_text, sizeof(left_text), "Companion thinking…");
-        else
-            snprintf(left_text, sizeof(left_text), "Pebble is thinking");
+        snprintf(left_text, sizeof(left_text), "Companion thinking…");
         graphics_draw_text(ctx, left_text,
                            fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
                            GRect(5, 1, width - 50, 20),

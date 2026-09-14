@@ -9,8 +9,7 @@ typedef enum {
     SELECTING_ROW,
     SELECTING_COL,
     GAME_OVER_STATE,
-    AI_THINKING,    // waiting on phone companion (pkjs) MCTS
-    LOCAL_THINKING  // computing on-watch (Pebble) MCTS
+    AI_THINKING // waiting on the phone companion (pkjs); the only AI engine
 } UIState;
 
 typedef enum {
