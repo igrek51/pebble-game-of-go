@@ -483,6 +483,75 @@ void mcts_run(int iterations, uint8_t current_player, int last_row,
     mcts_pool_used = 0;
     mcts_root = mcts_alloc(MCTS_PASS_ROW, MCTS_PASS_COL, EMPTY);
 
+    // Expand all root children up front (same fix as pkjs): otherwise the
+    // selection loop only descends through the single first-expanded child,
+    // the tree grows as one degenerate line, and the reply is just the
+    // first shuffled move.
+    // Tactical moves go first in sibling order: with only a handful of
+    // iterations the round-robin may never reach later children, so atari
+    // kill/escape must be tried (and, on ties, picked) first.
+    {
+        uint8_t move_rows[82], move_cols[82];
+        int n = get_legal_moves_on(board, ko_board, ko_active, current_player,
+                                   move_rows, move_cols);
+        int kill_at = -1, esc_at = -1;
+        for (int m = 0; m < n; m++) {
+            if (move_rows[m] == MCTS_PASS_ROW)
+                continue;
+            if (kill_at < 0 &&
+                would_capture_atari(board, move_rows[m], move_cols[m],
+                                    current_player))
+                kill_at = m;
+            else if (esc_at < 0 &&
+                     would_escape_atari(board, move_rows[m], move_cols[m],
+                                        current_player))
+                esc_at = m;
+        }
+        // Swap tactical moves to the front: kill first, escape right behind
+        // (or first when there is no kill). With only a handful of
+        // iterations the round-robin may never reach later children, and on
+        // visit ties the first sibling wins — so tactics must lead.
+        if (kill_at >= 0) {
+            if (kill_at > 0) {
+                uint8_t tr = move_rows[0], tc = move_cols[0];
+                move_rows[0] = move_rows[kill_at];
+                move_cols[0] = move_cols[kill_at];
+                move_rows[kill_at] = tr;
+                move_cols[kill_at] = tc;
+                if (esc_at == 0)
+                    esc_at = kill_at;
+            }
+            if (esc_at > 1) {
+                uint8_t tr = move_rows[1], tc = move_cols[1];
+                move_rows[1] = move_rows[esc_at];
+                move_cols[1] = move_cols[esc_at];
+                move_rows[esc_at] = tr;
+                move_cols[esc_at] = tc;
+            }
+        } else if (esc_at > 0) {
+            uint8_t tr = move_rows[0], tc = move_cols[0];
+            move_rows[0] = move_rows[esc_at];
+            move_cols[0] = move_cols[esc_at];
+            move_rows[esc_at] = tr;
+            move_cols[esc_at] = tc;
+        }
+        MCTSNode *root = &mcts_pool[mcts_root];
+        for (int m = 0; m < n; m++) {
+            uint16_t oc =
+                mcts_alloc(move_rows[m], move_cols[m], current_player);
+            if (oc == MCTS_NO_NODE)
+                break;
+            if (root->first_child_idx == MCTS_NO_NODE) {
+                root->first_child_idx = oc;
+            } else {
+                uint16_t sib = root->first_child_idx;
+                while (mcts_pool[sib].next_sibling_idx != MCTS_NO_NODE)
+                    sib = mcts_pool[sib].next_sibling_idx;
+                mcts_pool[sib].next_sibling_idx = oc;
+            }
+        }
+    }
+
     for (int iter = 0; iter < iterations; iter++) {
         mcts_path_len = 0;
         uint16_t node = mcts_root;
@@ -625,25 +694,82 @@ void mcts_run(int iterations, uint8_t current_player, int last_row,
     }
 }
 
+// A pass reply needs dominant evidence (>2x the best stone's visits): in
+// open positions passing is almost always wrong, but komi-skewed playouts
+// can make it look attractive. With no visited stone at all, play the first
+// legal stone instead of passing.
+#define PASS_VISIT_MARGIN 2
+
 uint16_t mcts_get_best_move(void) {
     MCTSNode *root = &mcts_pool[mcts_root];
-    uint16_t best_child = MCTS_NO_NODE;
-    uint16_t best_visits = 0;
+    uint16_t best_stone = MCTS_NO_NODE;
+    int best_stone_v = -1;
+    uint16_t best_pass = MCTS_NO_NODE;
+    int best_pass_v = -1;
 
     uint16_t child = root->first_child_idx;
     while (child != MCTS_NO_NODE && child < MCTS_POOL_SIZE) {
         MCTSNode *c = &mcts_pool[child];
-        if (c->visits > best_visits) {
-            best_visits = c->visits;
-            best_child = child;
+        if (c->move_row == MCTS_PASS_ROW) {
+            if ((int)c->visits > best_pass_v) {
+                best_pass_v = c->visits;
+                best_pass = child;
+            }
+        } else if ((int)c->visits > best_stone_v) {
+            best_stone_v = c->visits;
+            best_stone = child;
         }
         child = c->next_sibling_idx;
     }
-    return best_child;
+
+    if (best_stone == MCTS_NO_NODE)
+        return best_pass; // only pass exists (board full)
+    if (best_stone_v <= 0) {
+        // Too thin to have tried anything: first legal stone, never pass.
+        child = root->first_child_idx;
+        while (child != MCTS_NO_NODE && child < MCTS_POOL_SIZE) {
+            MCTSNode *c = &mcts_pool[child];
+            if (c->move_row != MCTS_PASS_ROW)
+                return child;
+            child = c->next_sibling_idx;
+        }
+        return best_pass;
+    }
+    if (best_pass != MCTS_NO_NODE &&
+        best_pass_v > PASS_VISIT_MARGIN * best_stone_v)
+        return best_pass;
+    return best_stone;
 }
 
-void mcts_get_move_coords(uint16_t node_idx, int *r, int *c) {
-    if (node_idx < MCTS_POOL_SIZE) {
+// Forced capture shortcut for the fallback engine: a hanging 1-lib enemy
+// group is taken outright (ko-legality verified on scratch) instead of
+// searched. With only a handful of iterations the tree cannot reliably rank
+// tactics. Known limitation: snapback traps are not detected.
+bool mcts_find_forced_capture(uint8_t player, int *r, int *c) {
+    static uint8_t tmp_b[BOARD_SIZE * BOARD_SIZE];
+    static uint8_t tmp_k[BOARD_SIZE * BOARD_SIZE];
+    uint8_t move_rows[82], move_cols[82];
+    int n = get_legal_moves_on(board, ko_board, ko_active, player, move_rows,
+                               move_cols);
+    for (int m = 0; m < n; m++) {
+        if (move_rows[m] == MCTS_PASS_ROW)
+            continue;
+        if (!would_capture_atari(board, move_rows[m], move_cols[m], player))
+            continue;
+        memcpy(tmp_b, board, sizeof(board));
+        memcpy(tmp_k, ko_board, sizeof(ko_board));
+        bool tmp_ko = ko_active;
+        if (sim_try_place(tmp_b, tmp_k, &tmp_ko, player, move_rows[m],
+                          move_cols[m])) {
+            *r = move_rows[m];
+            *c = move_cols[m];
+            return true;
+        }
+    }
+    return false;
+}
+
+void mcts_get_move_coords(uint16_t node_idx, int *r, int *c) {    if (node_idx < MCTS_POOL_SIZE) {
         *r = mcts_pool[node_idx].move_row;
         *c = mcts_pool[node_idx].move_col;
     } else {

@@ -104,9 +104,36 @@ test('opening reply to center stone is not on the edge', () => {
         'white reply (' + r[1] + ',' + r[2] + ') must not be on the edge');
 });
 
-/* --- tactics: must capture a group in atari --- */
+/* --- pass discipline: never early, always when finished --- */
 
-test('takes the atari capture', () => {
+test('does not pass on an empty board', () => {
+    loadPkjs();
+    const msgs = aiRequest({ 0: 0, 1: 1, 2: 4, 3: 4, 4: 0, 5: new Array(81).fill(0), 6: validKo() });
+    const r = assertSingleReply(msgs);
+    assert.strictEqual(r[3], 0, 'must play a stone on move 1, not pass');
+});
+
+test('does not pass midgame', () => {
+    loadPkjs();
+    const board = new Array(81).fill(0);
+    board[2 * 9 + 2] = 1; board[2 * 9 + 3] = 1; board[3 * 9 + 2] = 1;
+    board[6 * 9 + 6] = 2; board[6 * 9 + 5] = 2; board[5 * 9 + 6] = 2;
+    board[4 * 9 + 4] = 1;
+    const msgs = aiRequest({ 0: 0, 1: 2, 2: 4, 3: 4, 4: 0, 5: board, 6: validKo() });
+    const r = assertSingleReply(msgs);
+    assert.strictEqual(r[3], 0, 'must play in an open midgame, not pass');
+});
+
+test('passes a full board', () => {
+    loadPkjs();
+    const board = [];
+    for (let i = 0; i < 81; i++) board[i] = (i % 2) + 1;
+    const msgs = aiRequest({ 0: 0, 1: 1, 2: 0, 3: 0, 4: 1, 5: board, 6: validKo() });
+    const r = assertSingleReply(msgs);
+    assert.strictEqual(r[3], 1, 'must pass when no legal move exists');
+});
+
+/* --- tactics: must capture a group in atari --- */test('takes the atari capture', () => {
     loadPkjs();
     // Black stone (4,4) has one liberty left at (4,5); White to move must
     // capture there instead of playing elsewhere.
@@ -158,7 +185,7 @@ test('missing payload is ignored without throwing', () => {
     assert.strictEqual(pebble.sentMessages.length, 0);
 });
 
-/* --- responsiveness: reply must beat the 12000ms watch timeout --- */
+/* --- responsiveness: reply must beat the 72000ms watch timeout --- */
 
 test('MCTS reply arrives within time budget', () => {
     loadPkjs();
@@ -166,7 +193,7 @@ test('MCTS reply arrives within time budget', () => {
     const msgs = aiRequest({ 0: 0, 1: 1, 2: 4, 3: 4, 4: 0, 5: validBoard(), 6: validKo() });
     const dt = Date.now() - t0;
     assertSingleReply(msgs);
-    assert.ok(dt < 12000, 'handler took ' + dt + 'ms, must be < 12000ms watch timeout');
+    assert.ok(dt < 72000, 'handler took ' + dt + 'ms, must be < 72000ms watch timeout');
     console.log('    (handler took ' + dt + 'ms)');
 });
 

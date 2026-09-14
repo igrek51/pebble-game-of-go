@@ -8,11 +8,11 @@ var MCTS_NO_NODE = -1;
 var MCTS_ITERATIONS = 1000;
 var MCTS_MAX_PLAYOUT = 120;
 // Wall-clock budget for one AI move. The watch falls back to its local AI
-// after COMM_TIMEOUT_MS (12000ms), so the reply must leave well before that,
+// after COMM_TIMEOUT_MS (72000ms), so the reply must leave well before that,
 // including AppMessage transport time. Phone JS engines are much slower than
 // desktop V8 (300 iterations measured ~1.7s on V8), so mctsRun() stops early
 // once this budget is exceeded instead of running all iterations.
-var MCTS_TIME_BUDGET_MS = 10000;
+var MCTS_TIME_BUDGET_MS = 60000;
 
 var nodePool = [];
 var nodePoolUsed = 0;
@@ -914,9 +914,26 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
     for (iter = 0; iter < iterations; iter++) {
         // Time-boxed: stop early so the reply beats the watch-side timeout.
         // Date.now() is checked every 16 iterations to keep overhead low.
-        if ((iter & 15) === 0 && iter > 0 && (Date.now() - startTime) > MCTS_TIME_BUDGET_MS) {
-            console.log('pkjs: time budget exceeded at iter ' + iter + '/' + iterations);
-            break;
+        if ((iter & 15) === 0 && iter > 0) {
+            if (iter === 64) {
+                // Adaptive iteration count: measure this engine's speed and
+                // fit the search into 85% of the budget. Slow phone engines
+                // would otherwise run a thin, noise-dominated search (or
+                // trip the watchdog), which is when random-looking moves and
+                // unjustified passes happen.
+                var elapsed = Date.now() - startTime;
+                if (elapsed > 0) {
+                    var estFit = Math.floor(64 * (MCTS_TIME_BUDGET_MS * 0.85) / elapsed);
+                    if (estFit < iterations) {
+                        iterations = Math.max(150, estFit);
+                        console.log('pkjs: adaptive iterations -> ' + iterations);
+                    }
+                }
+            }
+            if ((Date.now() - startTime) > MCTS_TIME_BUDGET_MS) {
+                console.log('pkjs: time budget exceeded at iter ' + iter + '/' + iterations);
+                break;
+            }
         }
         if (iter % 500 === 0)
             console.log('pkjs: MCTS iter ' + iter + '/' + iterations + ' pool=' + nodePoolUsed);
@@ -1072,21 +1089,64 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
     }
 }
 
+// Pass replies need justification: a pass in an open position is almost
+// always wrong, but thin searches (few visits per child) and komi-skewed
+// playouts can make it look attractive. So the pass child wins only with
+// dominant evidence (>PASS_VISIT_MARGIN x the best stone's visits); with no
+// visited stone at all (search tripped the budget almost immediately) we
+// play static shape instead of passing.
+var PASS_VISIT_MARGIN = 2;
+
 function mctsGetBestMove() {
     var root = nodePool[rootNode];
-    var bestChild = MCTS_NO_NODE;
-    var bestVisits = 0;
+    var bestStone = MCTS_NO_NODE;
+    var bestStoneV = -1;
+    var bestPass = MCTS_NO_NODE;
+    var bestPassV = -1;
 
     var child = root.firstChild;
     while (child !== MCTS_NO_NODE && child < MCTS_POOL_SIZE) {
         var c = nodePool[child];
-        if (c.visits > bestVisits) {
-            bestVisits = c.visits;
-            bestChild = child;
+        if (c.moveRow === MCTS_PASS_ROW) {
+            if (c.visits > bestPassV) {
+                bestPassV = c.visits;
+                bestPass = child;
+            }
+        } else if (c.visits > bestStoneV) {
+            bestStoneV = c.visits;
+            bestStone = child;
         }
         child = c.nextSibling;
     }
-    return bestChild;
+
+    if (bestStone === MCTS_NO_NODE)
+        return bestPass; // only pass exists (board full): pass is correct
+    if (bestStoneV <= 0)
+        return bestPriorStone(); // too thin to have tried anything: shape
+    if (bestPass !== MCTS_NO_NODE &&
+        bestPassV > PASS_VISIT_MARGIN * bestStoneV)
+        return bestPass;
+    return bestStone;
+}
+
+// Highest static-shape non-pass root child (deterministic fallback).
+function bestPriorStone() {
+    var root = nodePool[rootNode];
+    var best = MCTS_NO_NODE;
+    var bestShape = -99999;
+    var child = root.firstChild;
+    while (child !== MCTS_NO_NODE && child < MCTS_POOL_SIZE) {
+        var c = nodePool[child];
+        if (c.moveRow !== MCTS_PASS_ROW) {
+            var s = shapeScore(c.moveRow, c.moveCol);
+            if (s > bestShape) {
+                bestShape = s;
+                best = child;
+            }
+        }
+        child = c.nextSibling;
+    }
+    return best;
 }
 
 

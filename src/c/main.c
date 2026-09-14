@@ -222,6 +222,13 @@ static void local_mcts_callback(void *data) {
 static void run_local_mcts(void) {
     APP_LOG(APP_LOG_LEVEL_INFO, "game: running local MCTS (player=%d, iters=%d)",
             current_player, MCTS_ITERATIONS);
+    int fr, fc;
+    if (mcts_find_forced_capture(current_player, &fr, &fc)) {
+        APP_LOG(APP_LOG_LEVEL_INFO, "game: local forced capture at (%d,%d)", fr, fc);
+        try_place_stone_ui(fr, fc);
+        after_move_played();
+        return;
+    }
     mcts_run(MCTS_ITERATIONS, current_player, last_move_row, last_move_col,
              consecutive_passes);
     uint16_t best_child = mcts_get_best_move();
