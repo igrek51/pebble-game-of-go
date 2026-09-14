@@ -32,4 +32,8 @@ extern bool last_move_placed;
 
 void init_board_logic(void);
 
+// Seconds elapsed since the current AI thinking phase started (0 when not
+// thinking). Implemented in main.c, rendered by the status bar.
+int think_elapsed_sec(void);
+
 #endif

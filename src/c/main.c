@@ -43,6 +43,8 @@ static void ai_unavailable(void);
 static void request_ai_move(void);
 static void show_ai_error_menu(const char *reason);
 static void hide_ai_error_menu(void);
+static void think_timer_start(void);
+static void think_timer_stop(void);
 static void pause_ai_for_estimate(void);
 static void resume_ai_after_estimate(void);
 static void canvas_update_proc(Layer *layer, GContext *ctx);
@@ -152,6 +154,7 @@ static void init_board_full(void) {
         ai_move_timer = NULL;
     }
     comm_cancel();
+    think_timer_stop();
 
     if (game_mode == MODE_BLACK_AI || game_mode == MODE_AI_AI) {
         ai_move_timer = app_timer_register(300, ai_move_callback, NULL);
@@ -168,6 +171,7 @@ static void pause_ai_for_estimate(void) {
         ai_move_timer = NULL;
     }
     comm_cancel();
+    think_timer_stop();
     s_ai_epoch++; // abandon any in-flight AI reply
     if (ui_state == AI_THINKING)
         ui_state = VIEW;
@@ -178,6 +182,45 @@ static void resume_ai_after_estimate(void) {
     APP_LOG(APP_LOG_LEVEL_INFO, "game: AI resumed after estimate");
     layer_mark_dirty(s_canvas_layer);
     after_move_played(); // re-arms the AI timer iff it is an AI turn
+}
+
+// Elapsed-time thinking banner: while AI_THINKING, a 1s timer repaints the
+// canvas so the status bar counts up ("White is thinking…5s"). The tick
+// stops itself whenever the state is no longer AI_THINKING.
+static AppTimer *think_timer = NULL;
+static time_t s_think_start = 0;
+
+int think_elapsed_sec(void) {
+    if (ui_state != AI_THINKING || s_think_start == 0)
+        return 0;
+    time_t now = time(NULL);
+    return (now >= s_think_start) ? (int)(now - s_think_start) : 0;
+}
+
+static void think_tick(void *data) {
+    (void)data;
+    think_timer = NULL;
+    if (ui_state != AI_THINKING)
+        return;
+    layer_mark_dirty(s_canvas_layer);
+    think_timer = app_timer_register(1000, think_tick, NULL);
+}
+
+static void think_timer_start(void) {
+    if (think_timer) {
+        app_timer_cancel(think_timer);
+        think_timer = NULL;
+    }
+    s_think_start = time(NULL);
+    think_timer = app_timer_register(1000, think_tick, NULL);
+}
+
+static void think_timer_stop(void) {
+    if (think_timer) {
+        app_timer_cancel(think_timer);
+        think_timer = NULL;
+    }
+    s_think_start = 0;
 }
 
 static void do_pass_ui(void) {
@@ -298,6 +341,7 @@ static void on_pkjs_move(int row, int col, int is_pass) {
         return;
     }
     ui_state = VIEW;
+    think_timer_stop();
 
     if (row < 0) {
         // Transport failure (or no Bluetooth): no local engine anymore,
@@ -368,6 +412,7 @@ static void ai_move_callback(void *data) {
         APP_LOG(APP_LOG_LEVEL_INFO, "game: trying pkjs...");
         ui_state = AI_THINKING;
         layer_mark_dirty(s_canvas_layer);
+        think_timer_start();
         s_req_epoch = ++s_ai_epoch;
         comm_request_ai_move(current_player, last_move_row, last_move_col,
                              consecutive_passes, moves_made, on_pkjs_move);
@@ -678,6 +723,7 @@ static void deinit(void) {
         app_timer_cancel(ai_move_timer);
         ai_move_timer = NULL;
     }
+    think_timer_stop();
     comm_cancel();
     save_game_state();
     window_destroy(s_main_window);

@@ -36,7 +36,9 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
     // on the right exactly like on a human turn.
     bool thinking = (ui_state == AI_THINKING);
     if (thinking) {
-        snprintf(left_text, sizeof(left_text), "Companion thinking…");
+        snprintf(left_text, sizeof(left_text), "%s is thinking…%ds",
+                 (current_player == BLACK ? "Black" : "White"),
+                 think_elapsed_sec());
         graphics_draw_text(ctx, left_text,
                            fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
                            GRect(5, 1, width - 50, 20),
