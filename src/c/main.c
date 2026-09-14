@@ -13,6 +13,14 @@ static int selected_col = 0;
 static AppTimer *ai_move_timer = NULL;
 static AppTimer *local_mcts_timer = NULL;
 
+// AI request epoch: every new pkjs request stamps s_req_epoch; any game
+// event that makes a pending reply stale (pass, stone, new game, estimate
+// pause) bumps s_ai_epoch. A reply whose epoch mismatches is ignored, so an
+// AI move computed for an older turn can never steal a newer one. This is
+// what allows the menu (PASS/EXIT/...) during AI thinking.
+static int s_ai_epoch = 0;
+static int s_req_epoch = 0;
+
 static Window *s_main_window;
 static Layer *s_canvas_layer;
 
@@ -39,6 +47,92 @@ static void hide_menu(void);
 static void show_mode_select(void);
 static void hide_mode_select(void);
 
+// ---- persisted game state ----
+// Auto-saved after every move/pass/mode change and on exit; auto-loaded on
+// open. New Game (or game-over dismiss) persists the fresh board, so a
+// reopen never resurrects a finished game.
+#define SAVE_MAGIC 0x474F3939
+#define SAVE_VERSION 1
+enum {
+    PKEY_MAGIC = 1,
+    PKEY_VERSION,
+    PKEY_BOARD,
+    PKEY_KO,
+    PKEY_CURRENT_PLAYER,
+    PKEY_PASSES,
+    PKEY_MOVES,
+    PKEY_MODE,
+    PKEY_LAST_ROW,
+    PKEY_LAST_COL,
+    PKEY_LAST_PLACED,
+    PKEY_BLACK_SCORE,
+    PKEY_WHITE_SCORE,
+    PKEY_UI_STATE,
+    PKEY_KO_ACTIVE,
+};
+
+static void save_game_state(void) {
+    persist_write_int(PKEY_MAGIC, SAVE_MAGIC);
+    persist_write_int(PKEY_VERSION, SAVE_VERSION);
+    persist_write_data(PKEY_BOARD, board, sizeof(board));
+    persist_write_data(PKEY_KO, ko_board, sizeof(ko_board));
+    persist_write_int(PKEY_CURRENT_PLAYER, current_player);
+    persist_write_int(PKEY_PASSES, consecutive_passes);
+    persist_write_int(PKEY_MOVES, moves_made);
+    persist_write_int(PKEY_MODE, game_mode);
+    persist_write_int(PKEY_LAST_ROW, last_move_row);
+    persist_write_int(PKEY_LAST_COL, last_move_col);
+    persist_write_int(PKEY_LAST_PLACED, last_move_placed ? 1 : 0);
+    persist_write_int(PKEY_BLACK_SCORE, black_score);
+    persist_write_int(PKEY_WHITE_SCORE, white_score);
+    persist_write_int(PKEY_UI_STATE, ui_state);
+    persist_write_int(PKEY_KO_ACTIVE, ko_active ? 1 : 0);
+    APP_LOG(APP_LOG_LEVEL_INFO, "game: state saved (moves=%d)", moves_made);
+}
+
+static bool load_game_state(void) {
+    if (!persist_exists(PKEY_MAGIC) ||
+        persist_read_int(PKEY_MAGIC) != SAVE_MAGIC)
+        return false;
+    if (!persist_exists(PKEY_VERSION) ||
+        persist_read_int(PKEY_VERSION) != SAVE_VERSION)
+        return false;
+    uint8_t btmp[BOARD_SIZE * BOARD_SIZE];
+    uint8_t ktmp[BOARD_SIZE * BOARD_SIZE];
+    if (persist_read_data(PKEY_BOARD, btmp, sizeof(btmp)) != sizeof(btmp))
+        return false;
+    if (persist_read_data(PKEY_KO, ktmp, sizeof(ktmp)) != sizeof(ktmp))
+        return false;
+    memcpy(board, btmp, sizeof(board));
+    memcpy(ko_board, ktmp, sizeof(ko_board));
+    current_player = (uint8_t)persist_read_int(PKEY_CURRENT_PLAYER);
+    if (current_player != BLACK && current_player != WHITE)
+        current_player = BLACK;
+    consecutive_passes = persist_read_int(PKEY_PASSES);
+    moves_made = persist_read_int(PKEY_MOVES);
+    int loaded_mode = persist_read_int(PKEY_MODE);
+    game_mode = (loaded_mode < MODE_PVP || loaded_mode > MODE_AI_AI)
+                    ? MODE_WHITE_AI
+                    : (GameMode)loaded_mode;
+    last_move_row = persist_read_int(PKEY_LAST_ROW);
+    last_move_col = persist_read_int(PKEY_LAST_COL);
+    last_move_placed = persist_read_int(PKEY_LAST_PLACED) != 0;
+    black_score = persist_read_int(PKEY_BLACK_SCORE);
+    white_score = persist_read_int(PKEY_WHITE_SCORE);
+    ui_state = (UIState)persist_read_int(PKEY_UI_STATE);
+    ko_active = persist_exists(PKEY_KO_ACTIVE) &&
+                persist_read_int(PKEY_KO_ACTIVE) != 0;
+    // A thinking/cursor state means nothing after a restart (any other
+    // value, including garbage, lands here too); an AI turn is re-armed
+    // by the caller. A finished game is re-shown by the caller.
+    if (ui_state != GAME_OVER_STATE)
+        ui_state = VIEW;
+    APP_LOG(APP_LOG_LEVEL_INFO,
+            "game: state loaded (moves=%d, player=%d, mode=%d)", moves_made,
+            current_player, game_mode);
+    return true;
+}
+
 static void init_board_full(void) {
     init_board_logic();
     selected_row = 0;
@@ -53,6 +147,7 @@ static void init_board_full(void) {
         local_mcts_timer = NULL;
     }
     comm_cancel();
+    s_ai_epoch++; // abandon any in-flight AI reply
 
     if (game_mode == MODE_BLACK_AI || game_mode == MODE_AI_AI) {
         ai_move_timer = app_timer_register(300, ai_move_callback, NULL);
@@ -73,6 +168,7 @@ static void pause_ai_for_estimate(void) {
         local_mcts_timer = NULL;
     }
     comm_cancel();
+    s_ai_epoch++; // abandon any in-flight AI reply
     if (ui_state == AI_THINKING || ui_state == LOCAL_THINKING)
         ui_state = VIEW;
     APP_LOG(APP_LOG_LEVEL_INFO, "game: AI paused for estimate");
@@ -88,16 +184,22 @@ static void do_pass_ui(void) {
     consecutive_passes++;
     ko_active = false;
     last_move_placed = false;
+    // A pass during AI thinking (via the menu) retires the pending request:
+    // its late reply must not play afterward.
+    s_ai_epoch++;
+    comm_cancel();
 
     if (consecutive_passes >= 2) {
         ui_state = GAME_OVER_STATE;
         compute_chinese_score();
+        save_game_state();
         show_gameover_dialog(init_board_full);
         return;
     }
 
     current_player = (current_player == BLACK) ? WHITE : BLACK;
     ui_state = VIEW;
+    save_game_state();
     after_move_played();
 }
 
@@ -152,6 +254,9 @@ static bool try_place_stone_ui(int row, int col) {
     consecutive_passes = 0;
     current_player = opponent;
     ui_state = VIEW;
+    s_ai_epoch++; // a placed stone retires any pending AI reply
+    comm_cancel();
+    save_game_state();
     return true;
 }
 
@@ -175,6 +280,12 @@ static void after_move_played(void) {
 
 static void on_pkjs_move(int row, int col, bool is_pass) {
     APP_LOG(APP_LOG_LEVEL_INFO, "game: pkjs responded: (%d,%d) pass=%d", row, col, is_pass);
+    if (s_req_epoch != s_ai_epoch) {
+        // Stale reply: the game moved on while the AI was thinking (e.g.
+        // the user passed via the menu). Never apply it.
+        APP_LOG(APP_LOG_LEVEL_INFO, "game: stale pkjs reply ignored");
+        return;
+    }
     ui_state = VIEW;
 
     if (row < 0) {
@@ -275,6 +386,7 @@ static void ai_move_callback(void *data) {
         APP_LOG(APP_LOG_LEVEL_INFO, "game: trying pkjs...");
         ui_state = AI_THINKING;
         layer_mark_dirty(s_canvas_layer);
+        s_req_epoch = ++s_ai_epoch;
         comm_request_ai_move(current_player, last_move_row, last_move_col,
                              consecutive_passes, on_pkjs_move);
     } else {
@@ -297,8 +409,14 @@ static void click_config_provider(Window *window) {
 static void handle_click(ClickRecognizerRef recognizer, void *context) {
     ButtonId button = click_recognizer_get_button_id(recognizer);
 
-    if (ui_state == AI_THINKING || ui_state == LOCAL_THINKING)
+    // Stone placement stays locked while the AI works (placing as the AI's
+    // color would corrupt the turn order), but BACK always opens the menu
+    // so the game never feels hung: PASS/EXIT/etc. stay available.
+    if (ui_state == AI_THINKING || ui_state == LOCAL_THINKING) {
+        if (button == BUTTON_ID_BACK)
+            show_menu();
         return;
+    }
 
     if (ui_state == VIEW) {
         if (button == BUTTON_ID_BACK)
@@ -341,8 +459,10 @@ static void handle_click(ClickRecognizerRef recognizer, void *context) {
         } else if (button == BUTTON_ID_BACK)
             ui_state = SELECTING_ROW;
     } else if (ui_state == GAME_OVER_STATE) {
-        if (button == BUTTON_ID_SELECT || button == BUTTON_ID_BACK)
+        if (button == BUTTON_ID_SELECT || button == BUTTON_ID_BACK) {
             init_board_full();
+            save_game_state(); // finished game must not resurrect on reopen
+        }
     }
     layer_mark_dirty(s_canvas_layer);
 }
@@ -355,6 +475,13 @@ static void menu_select_callback(int index, void *context) {
         show_mode_select();
         return;
     } else if (index == 2) {
+        if (ui_state == AI_THINKING || ui_state == LOCAL_THINKING) {
+            // A hint would run a second AI search and hand the cursor to
+            // the human on the AI's turn: refuse while thinking.
+            hide_menu();
+            show_error_dialog("Busy: AI thinking");
+            return;
+        }
         suggest_hint_logic(current_player, last_move_row, last_move_col, &selected_row,
                            &selected_col);
         if (selected_row >= 0)
@@ -438,6 +565,7 @@ static void hide_menu(void) {
 static void mode_select_callback(int index, void *context) {
     game_mode = (GameMode)index;
     init_board_full();
+    save_game_state(); // persist the reset so reopen starts clean
     hide_mode_select();
 }
 
@@ -489,9 +617,34 @@ static void init(void) {
         s_main_window,
         (WindowHandlers){.load = window_load, .unload = window_unload});
     window_stack_push(s_main_window, true);
+    if (load_game_state()) {
+        layer_mark_dirty(s_canvas_layer);
+        if (ui_state == GAME_OVER_STATE) {
+            compute_chinese_score();
+            show_gameover_dialog(init_board_full);
+        } else {
+            // ui_state is VIEW here (normalized by load); re-arm the AI
+            // timer iff the restored turn belongs to the AI.
+            after_move_played();
+        }
+    }
 }
 
-static void deinit(void) { window_destroy(s_main_window); }
+static void deinit(void) {
+    // EXIT is reachable while the AI thinks now: disarm everything first so
+    // no timer/phone callback can fire on torn-down windows and layers.
+    if (ai_move_timer) {
+        app_timer_cancel(ai_move_timer);
+        ai_move_timer = NULL;
+    }
+    if (local_mcts_timer) {
+        app_timer_cancel(local_mcts_timer);
+        local_mcts_timer = NULL;
+    }
+    comm_cancel();
+    save_game_state();
+    window_destroy(s_main_window);
+}
 
 int main(void) {
     init();
