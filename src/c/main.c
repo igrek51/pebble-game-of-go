@@ -5,6 +5,8 @@
 #include "ui/board_layer.h"
 #include "ui/dialogs.h"
 #include "ui/estimate_view.h"
+#include "ui/logs_view.h"
+#include "ui/think_log.h"
 #include <pebble.h>
 
 static int selected_row = 0;
@@ -189,6 +191,8 @@ static void resume_ai_after_estimate(void) {
 // stops itself whenever the state is no longer AI_THINKING.
 static AppTimer *think_timer = NULL;
 static time_t s_think_start = 0;
+static time_t s_human_start = 0;
+static uint8_t s_ai_think_color = EMPTY;
 
 int think_elapsed_sec(void) {
     if (ui_state != AI_THINKING || s_think_start == 0)
@@ -207,21 +211,27 @@ static void think_tick(void *data) {
 }
 
 static void think_timer_start(void) {
-    if (think_timer) {
-        app_timer_cancel(think_timer);
-        think_timer = NULL;
-    }
+    think_timer_stop();
+    s_ai_think_color = current_player;
     // Backdate one second so the banner shows 1s immediately, then 2s, ...
     s_think_start = time(NULL) - 1;
     think_timer = app_timer_register(1000, think_tick, NULL);
 }
 
 static void think_timer_stop(void) {
+    if (!think_timer && s_think_start == 0)
+        return;
+    int sec = think_elapsed_sec();
     if (think_timer) {
         app_timer_cancel(think_timer);
         think_timer = NULL;
     }
+    if (s_think_start != 0 && sec > 0) {
+        const char *color = (s_ai_think_color == BLACK) ? "Blk" : "Wht";
+        think_log_push_computer(color, sec);
+    }
     s_think_start = 0;
+    s_ai_think_color = EMPTY;
 }
 
 static void do_pass_ui(void) {
@@ -307,6 +317,15 @@ static bool try_place_stone_ui(int row, int col) {
 static void after_move_played(void) {
     APP_LOG(APP_LOG_LEVEL_INFO, "game: after_move_played -> next is %s, player=%d",
             next_is_ai_turn() ? "AI" : "human", current_player);
+    if (s_human_start != 0) {
+        int sec = (int)(time(NULL) - s_human_start);
+        if (sec > 0) {
+            const char *color =
+                (current_player == BLACK) ? "Wht" : "Blk"; // just moved
+            think_log_push_human(color, sec);
+        }
+        s_human_start = 0;
+    }
     layer_mark_dirty(s_canvas_layer);
 
     if (next_is_ai_turn()) {
@@ -466,6 +485,7 @@ static void handle_click(ClickRecognizerRef recognizer, void *context) {
         } else {
             ui_state = SELECTING_ROW;
             selected_row = last_move_row;
+            s_human_start = time(NULL);
             if (button == BUTTON_ID_UP && selected_row > 0)
                 selected_row--;
             if (button == BUTTON_ID_DOWN && selected_row < MENU_ROW)
@@ -483,8 +503,10 @@ static void handle_click(ClickRecognizerRef recognizer, void *context) {
                 ui_state = SELECTING_COL;
                 selected_col = last_move_col;
             }
-        } else if (button == BUTTON_ID_BACK)
+        } else if (button == BUTTON_ID_BACK) {
+            s_human_start = 0;
             ui_state = VIEW;
+        }
     } else if (ui_state == SELECTING_COL) {
         if (button == BUTTON_ID_UP)
             selected_col =
@@ -498,8 +520,10 @@ static void handle_click(ClickRecognizerRef recognizer, void *context) {
             // move leaves the cursor in SELECTING_COL for a retry.
             if (try_place_stone_ui(selected_row, selected_col))
                 after_move_played();
-        } else if (button == BUTTON_ID_BACK)
+        } else if (button == BUTTON_ID_BACK) {
+            s_human_start = 0;
             ui_state = SELECTING_ROW;
+        }
     } else if (ui_state == GAME_OVER_STATE) {
         if (button == BUTTON_ID_SELECT || button == BUTTON_ID_BACK) {
             init_board_full();
@@ -567,6 +591,10 @@ static void menu_select_callback(int index, void *context) {
         return;
     } else if (index == 5) {
         hide_menu();
+        logs_view_show();
+        return;
+    } else if (index == 6) {
+        hide_menu();
         window_stack_pop_all(true);
         return;
     }
@@ -577,7 +605,7 @@ static void menu_select_callback(int index, void *context) {
 static void show_menu(void) {
     if (!s_menu_window) {
         s_menu_window = window_create();
-        static SimpleMenuItem items[6];
+        static SimpleMenuItem items[7];
         items[0] =
             (SimpleMenuItem){.title = "PASS", .callback = menu_select_callback};
         items[1] = (SimpleMenuItem){.title = "NEW GAME",
@@ -589,8 +617,10 @@ static void show_menu(void) {
         items[4] = (SimpleMenuItem){.title = "RULES",
                                     .callback = menu_select_callback};
         items[5] =
+            (SimpleMenuItem){.title = "LOGS", .callback = menu_select_callback};
+        items[6] =
             (SimpleMenuItem){.title = "EXIT", .callback = menu_select_callback};
-        menu_sections[0] = (SimpleMenuSection){.num_items = 6, .items = items};
+        menu_sections[0] = (SimpleMenuSection){.num_items = 7, .items = items};
         s_menu_layer = simple_menu_layer_create(
             layer_get_bounds(window_get_root_layer(s_menu_window)),
             s_menu_window, menu_sections, 1, NULL);
