@@ -2,6 +2,7 @@
 #include "comm/comm.h"
 #include "game_state.h"
 #include "logic/board.h"
+#include "logic/life.h"
 #include "ui/board_layer.h"
 #include "ui/dialogs.h"
 #include "ui/estimate_view.h"
@@ -352,8 +353,41 @@ static void ai_unavailable(void) {
     show_ai_error_menu("AI unavailable");
 }
 
-static void on_pkjs_move(int row, int col, int is_pass) {
-    APP_LOG(APP_LOG_LEVEL_INFO, "game: pkjs responded: (%d,%d) pass=%d", row, col, is_pass);
+// Watch-side guard using the SAME dead logic as the estimate overlay:
+// simulate the AI candidate (with captures) on a copy, then run
+// find_dead_map. If the new stone is dead on arrival, the move is vetoed
+// even when it has >1 liberties (pkjs only checks 1-lib self-atari).
+// Illegal moves (suicide/ko/occupied) return false here so the existing
+// illegal-move path handles them.
+static bool ai_stone_dead_on_arrival(int row, int col) {
+    uint8_t player = current_player;
+    uint8_t opp = (player == BLACK) ? WHITE : BLACK;
+    int idx = board_index(row, col);
+    if (idx < 0 || board[idx] != EMPTY)
+        return false;
+    static uint8_t tmp[BOARD_SIZE * BOARD_SIZE];
+    memcpy(tmp, board, sizeof(tmp));
+    tmp[idx] = player;
+    const int dr[] = {-1, 1, 0, 0};
+    const int dc[] = {0, 0, -1, 1};
+    for (int d = 0; d < 4; d++) {
+        int nidx = board_index(row + dr[d], col + dc[d]);
+        if (nidx >= 0 && tmp[nidx] == opp &&
+            count_liberties_on(tmp, row + dr[d], col + dc[d], opp) == 0)
+            remove_group_on(tmp, row + dr[d], col + dc[d], opp);
+    }
+    if (count_liberties_on(tmp, row, col, player) == 0)
+        return false;
+    if (ko_active && memcmp(tmp, ko_board, sizeof(tmp)) == 0)
+        return false;
+    static bool dead[BOARD_SIZE * BOARD_SIZE];
+    find_dead_map(tmp, dead);
+    return dead[idx];
+}
+
+static int s_dead_veto_retries = 0;
+
+static void on_pkjs_move(int row, int col, int is_pass) {    APP_LOG(APP_LOG_LEVEL_INFO, "game: pkjs responded: (%d,%d) pass=%d", row, col, is_pass);
     if (s_req_epoch != s_ai_epoch) {
         // Stale reply: the game moved on while the AI was thinking (e.g.
         // the user passed via the menu). Never apply it.
@@ -395,13 +429,33 @@ static void on_pkjs_move(int row, int col, int is_pass) {
             return;
         }
         APP_LOG(APP_LOG_LEVEL_INFO, "game: pkjs chose PASS");
+        s_dead_veto_retries = 0;
+        vibes_short_pulse();
         do_pass_ui();
         layer_mark_dirty(s_canvas_layer);
         return;
     }
 
     APP_LOG(APP_LOG_LEVEL_INFO, "game: playing pkjs move at (%d,%d)", row, col);
-    try_place_stone_ui(row, col);
+    if (ai_stone_dead_on_arrival(row, col)) {
+        // Same verdict the estimate overlay would show: do not put a dead
+        // stone on the board. Auto-retry (fresh RNG seed on the companion)
+        // twice, then offer choices instead of looping forever.
+        APP_LOG(APP_LOG_LEVEL_ERROR, "game: veto AI dead-on-arrival at (%d,%d)",
+                row, col);
+        layer_mark_dirty(s_canvas_layer);
+        if (s_dead_veto_retries < 2) {
+            s_dead_veto_retries++;
+            request_ai_move();
+        } else {
+            s_dead_veto_retries = 0;
+            show_ai_error_menu("AI played dead stone");
+        }
+        return;
+    }
+    s_dead_veto_retries = 0;
+    if (try_place_stone_ui(row, col))
+        vibes_short_pulse();
     after_move_played();
 }
 
@@ -423,7 +477,8 @@ static void ai_move_callback(void *data) {
     if (moves_made == 0 && current_player == BLACK &&
         get_stone(4, 3) == EMPTY) {
         APP_LOG(APP_LOG_LEVEL_INFO, "game: first move D5");
-        try_place_stone_ui(4, 3);
+        if (try_place_stone_ui(4, 3))
+            vibes_short_pulse();
         after_move_played();
         return;
     }
