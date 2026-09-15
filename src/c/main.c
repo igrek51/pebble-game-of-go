@@ -534,13 +534,17 @@ static void handle_click(ClickRecognizerRef recognizer, void *context) {
 }
 
 static void menu_select_callback(int index, void *context) {
-    if (index == 0)
+    if (index == 0) {
+        hide_menu();
+        window_stack_pop_all(true);
+        return;
+    } else if (index == 1)
         do_pass_ui();
-    else if (index == 1) {
+    else if (index == 2) {
         hide_menu();
         show_mode_select();
         return;
-    } else if (index == 2) {
+    } else if (index == 3) {
         // Hints are for the human side only: suggesting (and then placing)
         // as the AI's color would corrupt the turn order. Blocked both
         // while thinking and on any AI turn.
@@ -553,12 +557,12 @@ static void menu_select_callback(int index, void *context) {
                            &selected_col);
         if (selected_row >= 0)
             ui_state = SELECTING_COL;
-    } else if (index == 3) {
+    } else if (index == 4) {
         pause_ai_for_estimate();
         hide_menu();
         estimate_view_show(resume_ai_after_estimate);
         return;
-    } else if (index == 4) {
+    } else if (index == 5) {
         hide_menu();
         show_scroll_dialog(
             "Rules of Go:\n"
@@ -589,13 +593,9 @@ static void menu_select_callback(int index, void *context) {
             "compensate "
             "for going second.\n");
         return;
-    } else if (index == 5) {
-        hide_menu();
-        logs_view_show();
-        return;
     } else if (index == 6) {
         hide_menu();
-        window_stack_pop_all(true);
+        logs_view_show();
         return;
     }
     hide_menu();
@@ -607,19 +607,19 @@ static void show_menu(void) {
         s_menu_window = window_create();
         static SimpleMenuItem items[7];
         items[0] =
-            (SimpleMenuItem){.title = "PASS", .callback = menu_select_callback};
-        items[1] = (SimpleMenuItem){.title = "NEW GAME",
-                                    .callback = menu_select_callback};
-        items[2] =
-            (SimpleMenuItem){.title = "HINT", .callback = menu_select_callback};
-        items[3] = (SimpleMenuItem){.title = "ESTIMATE",
-                                    .callback = menu_select_callback};
-        items[4] = (SimpleMenuItem){.title = "RULES",
-                                    .callback = menu_select_callback};
-        items[5] =
-            (SimpleMenuItem){.title = "LOGS", .callback = menu_select_callback};
-        items[6] =
             (SimpleMenuItem){.title = "EXIT", .callback = menu_select_callback};
+        items[1] =
+            (SimpleMenuItem){.title = "PASS", .callback = menu_select_callback};
+        items[2] = (SimpleMenuItem){.title = "NEW GAME",
+                                    .callback = menu_select_callback};
+        items[3] =
+            (SimpleMenuItem){.title = "HINT", .callback = menu_select_callback};
+        items[4] = (SimpleMenuItem){.title = "ESTIMATE",
+                                    .callback = menu_select_callback};
+        items[5] = (SimpleMenuItem){.title = "RULES",
+                                    .callback = menu_select_callback};
+        items[6] =
+            (SimpleMenuItem){.title = "LOGS", .callback = menu_select_callback};
         menu_sections[0] = (SimpleMenuSection){.num_items = 7, .items = items};
         s_menu_layer = simple_menu_layer_create(
             layer_get_bounds(window_get_root_layer(s_menu_window)),
