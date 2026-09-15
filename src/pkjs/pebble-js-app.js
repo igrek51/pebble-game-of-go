@@ -892,6 +892,265 @@ function chooseScoredMove(b, koB, koActiveObj, player, moves, lastR, lastC) {
     return -1;
 }
 
+// ---- static life/death (JS port of src/c/logic/life.c) ----
+// Same semantics as the estimate overlay: Benson unconditional life +
+// confined-region dead removal. Used for root dead-on-arrival veto and
+// terminal scoring so the search agrees with what the watch displays.
+var LIFE_DEAD_REGION_MAX = 8;
+
+function lifeBfsLabel(b, sr, sc, labels, id, emptyTarget) {
+    var stackR = [sr], stackC = [sc], top = 1;
+    labels[boardIndex(sr, sc)] = id;
+    var match = b[boardIndex(sr, sc)];
+    var dr = [-1, 1, 0, 0], dc = [0, 0, -1, 1];
+    while (top > 0) {
+        top--;
+        var r = stackR[top], c = stackC[top];
+        for (var d = 0; d < 4; d++) {
+            var nr = r + dr[d], nc = c + dc[d];
+            var nidx = boardIndex(nr, nc);
+            if (nidx < 0 || labels[nidx] >= 0)
+                continue;
+            var isEmpty = (b[nidx] === EMPTY);
+            if (isEmpty !== emptyTarget)
+                continue;
+            if (!emptyTarget && b[nidx] !== match)
+                continue;
+            labels[nidx] = id;
+            stackR[top] = nr;
+            stackC[top] = nc;
+            top++;
+        }
+    }
+}
+
+function lifeLabelAll(b, out) {
+    var block = out.block, region = out.region;
+    for (var i = 0; i < 81; i++) {
+        block[i] = -1;
+        region[i] = -1;
+    }
+    out.nblocks = 0;
+    out.nregions = 0;
+    out.blockColor = out.blockColor || [];
+    for (var r = 0; r < BOARD_SIZE; r++) {
+        for (var c = 0; c < BOARD_SIZE; c++) {
+            var idx = boardIndex(r, c);
+            if (b[idx] !== EMPTY) {
+                if (block[idx] < 0) {
+                    lifeBfsLabel(b, r, c, block, out.nblocks, false);
+                    out.blockColor[out.nblocks] = b[idx];
+                    out.nblocks++;
+                }
+            } else if (region[idx] < 0) {
+                lifeBfsLabel(b, r, c, region, out.nregions, true);
+                out.nregions++;
+            }
+        }
+    }
+}
+
+function lifeRegionEnclosedBy(b, lab, r, color) {
+    var found = false;
+    var dr = [-1, 1, 0, 0], dc = [0, 0, -1, 1];
+    for (var i = 0; i < 81; i++) {
+        if (lab.region[i] !== r)
+            continue;
+        var row = Math.floor(i / BOARD_SIZE), col = i % BOARD_SIZE;
+        for (var d = 0; d < 4; d++) {
+            var nidx = boardIndex(row + dr[d], col + dc[d]);
+            if (nidx < 0 || b[nidx] === EMPTY)
+                continue;
+            if (b[nidx] !== color)
+                return false;
+            found = true;
+        }
+    }
+    return found;
+}
+
+function lifeRegionSupported(b, lab, r, X) {
+    var dr = [-1, 1, 0, 0], dc = [0, 0, -1, 1];
+    for (var i = 0; i < 81; i++) {
+        if (lab.region[i] !== r)
+            continue;
+        var row = Math.floor(i / BOARD_SIZE), col = i % BOARD_SIZE;
+        for (var d = 0; d < 4; d++) {
+            var nidx = boardIndex(row + dr[d], col + dc[d]);
+            if (nidx < 0 || b[nidx] === EMPTY)
+                continue;
+            if (!X[lab.block[nidx]])
+                return false;
+        }
+    }
+    return true;
+}
+
+function lifeRegionVitalFor(b, lab, r, blk) {
+    var dr = [-1, 1, 0, 0], dc = [0, 0, -1, 1];
+    for (var i = 0; i < 81; i++) {
+        if (lab.region[i] !== r)
+            continue;
+        var row = Math.floor(i / BOARD_SIZE), col = i % BOARD_SIZE;
+        var touches = false;
+        for (var d = 0; d < 4; d++) {
+            var nidx = boardIndex(row + dr[d], col + dc[d]);
+            if (nidx >= 0 && lab.block[nidx] === blk) {
+                touches = true;
+                break;
+            }
+        }
+        if (!touches)
+            return false;
+    }
+    return true;
+}
+
+function lifeBensonForColor(b, lab, color, aliveOut) {
+    var X = [], R = [], i, blk, r;
+    for (i = 0; i < lab.nblocks; i++)
+        X[i] = (lab.blockColor[i] === color);
+    for (i = 0; i < lab.nregions; i++)
+        R[i] = lifeRegionEnclosedBy(b, lab, i, color);
+    var changed = true;
+    while (changed) {
+        changed = false;
+        for (blk = 0; blk < lab.nblocks; blk++) {
+            if (!X[blk])
+                continue;
+            var vital = 0;
+            for (r = 0; r < lab.nregions; r++) {
+                if (R[r] && lifeRegionVitalFor(b, lab, r, blk)) {
+                    vital++;
+                    if (vital >= 2)
+                        break;
+                }
+            }
+            if (vital < 2) {
+                X[blk] = false;
+                changed = true;
+            }
+        }
+        for (r = 0; r < lab.nregions; r++) {
+            if (R[r] && !lifeRegionSupported(b, lab, r, X)) {
+                R[r] = false;
+                changed = true;
+            }
+        }
+    }
+    for (i = 0; i < 81; i++) {
+        if (lab.block[i] >= 0 && X[lab.block[i]])
+            aliveOut[i] = true;
+    }
+}
+
+function lifeRegionSize(lab, r) {
+    var n = 0;
+    for (var i = 0; i < 81; i++) {
+        if (lab.region[i] === r)
+            n++;
+    }
+    return n;
+}
+
+function lifeBlockConfinedDead(b, lab, blk, opp) {
+    var seen = {};
+    var dr = [-1, 1, 0, 0], dc = [0, 0, -1, 1];
+    for (var i = 0; i < 81; i++) {
+        if (lab.block[i] !== blk)
+            continue;
+        var row = Math.floor(i / BOARD_SIZE), col = i % BOARD_SIZE;
+        for (var d = 0; d < 4; d++) {
+            var nidx = boardIndex(row + dr[d], col + dc[d]);
+            if (nidx < 0 || b[nidx] !== EMPTY)
+                continue;
+            var r = lab.region[nidx];
+            if (seen[r])
+                continue;
+            seen[r] = true;
+            if (lifeRegionSize(lab, r) > LIFE_DEAD_REGION_MAX)
+                return false;
+            var oppFound = false;
+            for (var j = 0; j < 81; j++) {
+                if (lab.region[j] !== r)
+                    continue;
+                var jr = Math.floor(j / BOARD_SIZE), jc = j % BOARD_SIZE;
+                for (var e = 0; e < 4; e++) {
+                    var kidx = boardIndex(jr + dr[e], jc + dc[e]);
+                    if (kidx < 0 || b[kidx] === EMPTY)
+                        continue;
+                    if (lab.block[kidx] === blk)
+                        continue;
+                    if (b[kidx] !== opp)
+                        return false;
+                    oppFound = true;
+                }
+            }
+            if (!oppFound)
+                return false;
+        }
+    }
+    return true;
+}
+
+// In-place dead removal on `w` (81-array), up to maxRounds. Returns count.
+function lifeRemoveDead(w, maxRounds) {
+    var total = 0;
+    var lab = {block: [], region: [], blockColor: [], nblocks: 0, nregions: 0};
+    for (var round = 0; round < maxRounds; round++) {
+        lifeLabelAll(w, lab);
+        var alive = [];
+        for (var i = 0; i < 81; i++)
+            alive[i] = false;
+        lifeBensonForColor(w, lab, BLACK, alive);
+        lifeBensonForColor(w, lab, WHITE, alive);
+        var kill = [], nkill = 0, blk;
+        for (blk = 0; blk < lab.nblocks; blk++) {
+            var isAlive = false;
+            for (var k = 0; k < 81; k++) {
+                if (lab.block[k] === blk && alive[k]) {
+                    isAlive = true;
+                    break;
+                }
+            }
+            if (isAlive)
+                continue;
+            var opp = (lab.blockColor[blk] === BLACK) ? WHITE : BLACK;
+            if (lifeBlockConfinedDead(w, lab, blk, opp)) {
+                kill[blk] = true;
+                nkill++;
+            }
+        }
+        if (nkill === 0)
+            break;
+        for (var m = 0; m < 81; m++) {
+            if (lab.block[m] >= 0 && kill[lab.block[m]]) {
+                w[m] = EMPTY;
+                total++;
+            }
+        }
+    }
+    return total;
+}
+
+// True when the candidate stone is dead on arrival under overlay semantics:
+// simulate (with captures) on probeBoard, run full dead removal on a copy,
+// and see if the new stone is gone. Illegal moves return false.
+function lifeStoneDeadOnArrival(b, koB, koActive, player, r, c) {
+    var opp = (player === BLACK) ? WHITE : BLACK;
+    var idx = boardIndex(r, c);
+    if (idx < 0 || b[idx] !== EMPTY)
+        return false;
+    copyBoard(probeBoard, b);
+    copyBoard(probeKo, koB);
+    var res = simTryPlace(probeBoard, probeKo, koActive, player, r, c);
+    if (!res.success)
+        return false;
+    copyBoard(playBoard, probeBoard);
+    lifeRemoveDead(playBoard, 10);
+    return playBoard[idx] === EMPTY;
+}
+
 // Terminal scoring that does not reward dead stones: before Tromp-Taylor
 // counting, strip groups with <=1 liberty (likely dead at playout end) so
 // self-atari invasions score as losses, not free points. Single pass over
@@ -908,6 +1167,16 @@ function scoreBoardDeadAware(b) {
                 removeGroupOn(probeBoard, r, c, col);
         }
     }
+    // Settled terminals: full overlay-equivalent dead removal so 2+-lib
+    // dead invaders don't score. Gated on empties (open playout ends are
+    // noisy and the analysis costs) and capped at 4 rounds (C uses 10).
+    var empties = 0, e;
+    for (e = 0; e < 81; e++) {
+        if (probeBoard[e] === EMPTY)
+            empties++;
+    }
+    if (empties <= 40)
+        lifeRemoveDead(probeBoard, 4);
     return scoreBoard(probeBoard);
 }
 
@@ -1479,15 +1748,19 @@ function handleAiRequest(payload) {
     console.log('pkjs: best node index=' + best);
 
     // Root safety veto: never play an immediately-dead move when a tried
-    // alternative exists. If the visits-winner is a pure self-atari (or
-    // fills our own eye), walk down the visit ranking for the first safe
-    // stone. Captures are never vetoed (putsSelfInAtari is false for them).
+    // alternative exists. Unsafe = pure self-atari, own-eye fill, or dead
+    // on arrival under overlay semantics (Benson + confined regions, same
+    // as the watch estimate view). Captures are never vetoed.
+    // NOTE: lifeStoneDeadOnArrival uses playBoard/probeBoard scratch: safe
+    // here because the search is finished (no active playout).
     if (best !== MCTS_NO_NODE) {
         var bn = nodePool[best];
         if (bn.moveRow !== MCTS_PASS_ROW &&
             (putsSelfInAtari(gBoard, gKoBoard, gKoActive, currentPlayer,
                              bn.moveRow, bn.moveCol) ||
-             fillsOwnEye(gBoard, bn.moveRow, bn.moveCol, currentPlayer))) {
+             fillsOwnEye(gBoard, bn.moveRow, bn.moveCol, currentPlayer) ||
+             lifeStoneDeadOnArrival(gBoard, gKoBoard, gKoActive,
+                                    currentPlayer, bn.moveRow, bn.moveCol))) {
             console.log('pkjs: veto unsafe best (' + bn.moveRow + ',' + bn.moveCol + '), seeking safe alternative');
             var cands = [];
             var ch = nodePool[rootNode].firstChild;
@@ -1503,7 +1776,10 @@ function handleAiRequest(payload) {
                 if (!putsSelfInAtari(gBoard, gKoBoard, gKoActive,
                                      currentPlayer, cand.moveRow, cand.moveCol) &&
                     !fillsOwnEye(gBoard, cand.moveRow, cand.moveCol,
-                                 currentPlayer)) {
+                                 currentPlayer) &&
+                    !lifeStoneDeadOnArrival(gBoard, gKoBoard, gKoActive,
+                                            currentPlayer, cand.moveRow,
+                                            cand.moveCol)) {
                     console.log('pkjs: veto -> safe (' + cand.moveRow + ',' + cand.moveCol + ') visits=' + cand.visits);
                     best = cands[ci];
                     break;
