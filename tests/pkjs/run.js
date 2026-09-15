@@ -88,6 +88,50 @@ test('non-zero type is ignored (no reply)', () => {
     assert.strictEqual(msgs.length, 0);
 });
 
+/* --- opening book: KataGo-based first two moves, rotation-proof --- */
+
+test('book plays 4-4 on empty board', () => {
+    loadPkjs();
+    const msgs = aiRequest({ 0: 0, 1: 1, 2: 4, 3: 4, 4: 0, 5: new Array(81).fill(0), 6: validKo(), 7: 0 });
+    const r = assertSingleReply(msgs);
+    assert.deepStrictEqual([r[1], r[2], r[3]], [3, 3, 0]);
+});
+
+test('book answers 4-4 corner with opposing 4-4, all rotations', () => {
+    // Black (3,3) and its rotations -> White mirrors across the center.
+    const cases = [
+        [[3, 3], [5, 5]], [[3, 5], [5, 3]],
+        [[5, 5], [3, 3]], [[5, 3], [3, 5]],
+    ];
+    for (const [[br, bc], [er, ec]] of cases) {
+        loadPkjs();
+        const board = new Array(81).fill(0);
+        board[br * 9 + bc] = 1;
+        const msgs = aiRequest({ 0: 0, 1: 2, 2: br, 3: bc, 4: 0, 5: board, 6: validKo(), 7: 1 });
+        const r = assertSingleReply(msgs);
+        assert.deepStrictEqual([r[1], r[2], r[3]], [er, ec, 0],
+            'vs black (' + br + ',' + bc + ')');
+    }
+});
+
+test('book answers tengen with 3-3 corner', () => {
+    loadPkjs();
+    const board = new Array(81).fill(0);
+    board[4 * 9 + 4] = 1;
+    const msgs = aiRequest({ 0: 0, 1: 2, 2: 4, 3: 4, 4: 0, 5: board, 6: validKo(), 7: 1 });
+    const r = assertSingleReply(msgs);
+    assert.deepStrictEqual([r[1], r[2], r[3]], [2, 2, 0]);
+});
+
+test('book default is diagonal split, rotation-consistent', () => {
+    loadPkjs();
+    const board = new Array(81).fill(0);
+    board[1 * 9 + 4] = 1; // side stone: canonical (1,4) -> reply (7,4)
+    const msgs = aiRequest({ 0: 0, 1: 2, 2: 1, 3: 4, 4: 0, 5: board, 6: validKo(), 7: 1 });
+    const r = assertSingleReply(msgs);
+    assert.deepStrictEqual([r[1], r[2], r[3]], [7, 4, 0]);
+});
+
 /* --- opening quality: no first-line reply to a center opening --- */function onEdge(r, c) {
     return r === 0 || r === 8 || c === 0 || c === 8;
 }

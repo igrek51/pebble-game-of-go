@@ -211,7 +211,8 @@ static void think_timer_start(void) {
         app_timer_cancel(think_timer);
         think_timer = NULL;
     }
-    s_think_start = time(NULL);
+    // Backdate one second so the banner shows 1s immediately, then 2s, ...
+    s_think_start = time(NULL) - 1;
     think_timer = app_timer_register(1000, think_tick, NULL);
 }
 
@@ -516,9 +517,10 @@ static void menu_select_callback(int index, void *context) {
         show_mode_select();
         return;
     } else if (index == 2) {
-        if (ui_state == AI_THINKING) {
-            // A hint would run a second AI search and hand the cursor to
-            // the human on the AI's turn: refuse while thinking.
+        // Hints are for the human side only: suggesting (and then placing)
+        // as the AI's color would corrupt the turn order. Blocked both
+        // while thinking and on any AI turn.
+        if (ui_state == AI_THINKING || next_is_ai_turn()) {
             hide_menu();
             show_error_dialog("Busy: AI thinking");
             return;

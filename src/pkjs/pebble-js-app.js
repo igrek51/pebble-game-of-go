@@ -1180,6 +1180,85 @@ function bestPriorStone() {
 }
 
 
+// ---- opening book (moves 1-2) ----
+// Research basis (katagobooks.org 9x9 book, area scoring like ours):
+// Black's optimal first moves are the 4-4 point (most popular with strong
+// bots), tengen, and 4-5; vs a 4-4 corner White takes the diagonally
+// opposing 4-4. Vs tengen White takes a solid 3-3 corner. All other
+// single-stone classes use the diagonal strategy (180-degree rotation),
+// which splits the board.
+// Symmetry classes: the 8 D4 transforms (rotation/reflection) map any
+// single stone to one canonical representative; the reply is computed in
+// canonical coords and mapped back, so rotated positions provably get
+// rotated replies. INV[t] inverts transform t.
+var SYM_COUNT = 8;
+var SYM_INV = [0, 3, 2, 1, 4, 5, 6, 7];
+
+function symApply(t, r, c) {
+    if (t === 0) return [r, c];
+    if (t === 1) return [c, 8 - r];
+    if (t === 2) return [8 - r, 8 - c];
+    if (t === 3) return [8 - c, r];
+    if (t === 4) return [8 - r, c];
+    if (t === 5) return [r, 8 - c];
+    if (t === 6) return [c, r];
+    return [8 - c, 8 - r];
+}
+
+// Canonical reply table, keyed by canonical single-stone coord (row*9+col).
+// Tengen (40) -> solid 3-3 corner (18); 4-4 corner (30) -> opposing 4-4 (50).
+var OPENING_REPLY = {
+    40: [2, 2],
+    30: [5, 5]
+};
+
+function canonicalTransform(r, c) {
+    var bestT = 0, bestKey = 999;
+    for (var t = 0; t < SYM_COUNT; t++) {
+        var p = symApply(t, r, c);
+        var key = p[0] * BOARD_SIZE + p[1];
+        if (key < bestKey) {
+            bestKey = key;
+            bestT = t;
+        }
+    }
+    return bestT;
+}
+
+// Returns [r, c] or null. Only for genuine 1-2 move openings.
+function openingBookMove(b, movesMade, player) {
+    var stones = 0, sr = -1, sc = -1, i;
+    for (i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
+        if (b[i] !== EMPTY) {
+            stones++;
+            sr = Math.floor(i / BOARD_SIZE);
+            sc = i % BOARD_SIZE;
+        }
+    }
+    if (movesMade === 0) {
+        if (stones !== 0 || player !== BLACK)
+            return null;
+        return [3, 3]; // 4-4 point: KataGo's most popular optimal opener
+    }
+    if (movesMade !== 1 || stones !== 1)
+        return null;
+    var t = canonicalTransform(sr, sc);
+    var cp = symApply(t, sr, sc);
+    var key = cp[0] * BOARD_SIZE + cp[1];
+    var rep = OPENING_REPLY[key];
+    var br, bc;
+    if (rep) {
+        br = rep[0];
+        bc = rep[1];
+    } else {
+        br = 8 - cp[0]; // diagonal strategy: rotate 180 in canonical space
+        bc = 8 - cp[1];
+    }
+    var back = symApply(SYM_INV[t], br, bc);
+    if (boardIndex(back[0], back[1]) < 0 || b[back[0] * BOARD_SIZE + back[1]] !== EMPTY)
+        return null;
+    return back;
+}
 // Send a move reply back to the watch. This is the ONLY way the watch
 // leaves AI_THINKING (besides its own timeout), so every code path below
 // must end here — never throw without replying, or the game appears hung
@@ -1281,6 +1360,14 @@ function handleAiRequest(payload) {
         return;
     }
     console.log('pkjs: player=' + currentPlayer + ' last=(' + lastRow + ',' + lastCol + ') passes=' + consecutivePasses + ' moves=' + movesMade);
+
+    // Opening book first (moves 1-2): deterministic, no search needed.
+    var bookMove = openingBookMove(gBoard, movesMade, currentPlayer);
+    if (bookMove) {
+        console.log('pkjs: opening book plays (' + bookMove[0] + ',' + bookMove[1] + ')');
+        sendMoveReply(bookMove[0], bookMove[1], 0);
+        return;
+    }
 
     // Forced capture shortcut: a hanging 1-lib enemy group is captured
     // outright (ko-legality verified) instead of searched. At 300-1000
