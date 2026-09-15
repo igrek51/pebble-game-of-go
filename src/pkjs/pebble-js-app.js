@@ -84,9 +84,12 @@ var ENDGAME_EMPTIES = 12;
 var passPrior = 0.5;
 
 // Cost gates (out of 10) for the expensive simulation-based checks.
-// Pachi-style: tactics run probabilistically to bound playout cost.
-var TIER3_PROB10 = 1;
-var TACT_PEN_PROB10 = 3;
+// Was Pachi-style probabilistic (1 and 3); now always-on: tactics and
+// self-atari/eye penalties run on every step. Phone JS still fits the
+// 60s budget at 1000 iterations, and skipping them is what produced
+// immediately-dead moves.
+var TIER3_PROB10 = 10;
+var TACT_PEN_PROB10 = 10;
 
 // Move history of the current iteration (tree + playout applied stones),
 // used to update AMAF once the playout outcome is known.
@@ -649,6 +652,49 @@ function groupLiberties(b, sr, sc, color, out) {
     return n;
 }
 
+// Snapback guard for the forced-capture shortcut: simulate the kill, then
+// see if the opponent immediately recaptures at our sole liberty for at
+// least as many stones as we took. If so this is a throw-in trap, not a
+// free capture — return true (unsafe, let search decide).
+function isUnsafeCapture(b, koB, koActive, player, r, c) {
+    var opp = (player === BLACK) ? WHITE : BLACK;
+    copyBoard(probeBoard, b);
+    copyBoard(probeKo, koB);
+    var res = simTryPlace(probeBoard, probeKo, koActive, player, r, c);
+    if (!res.success)
+        return true;
+    var before = 0, after = 0, i;
+    for (i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
+        if (b[i] === opp)
+            before++;
+        if (probeBoard[i] === opp)
+            after++;
+    }
+    var gained = before - after;
+    if (gained <= 0)
+        return true;
+    if (countLibertiesOn(probeBoard, r, c, player) > 1)
+        return false;
+    var lib = findLiberty(probeBoard, r, c);
+    if (lib.r < 0)
+        return true;
+    // Opponent recapture test (playBoard is idle at root-decision time).
+    copyBoard(playBoard, probeBoard);
+    copyBoard(playKoBoard, probeKo);
+    var ores = simTryPlace(playBoard, playKoBoard, res.koActive, opp,
+                           lib.r, lib.c);
+    if (!ores.success)
+        return false;
+    var ourBefore = 0, ourAfter = 0;
+    for (i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
+        if (probeBoard[i] === player)
+            ourBefore++;
+        if (playBoard[i] === player)
+            ourAfter++;
+    }
+    return (ourBefore - ourAfter) >= gained;
+}
+
 // Tier-1 scan factored out: index into `moves` of a killing reply to a
 // 1-lib enemy group, or -1. Used by the shared tactical finder and by the
 // root forced-capture override.
@@ -677,11 +723,23 @@ function findAtariKill(b, player, moves) {
 function findTacticalMove(b, koB, koActive, player, moves, lastR, lastC) {
     var opp = (player === BLACK) ? WHITE : BLACK;
     var r, c, m;
-    // Tier 1: immediate atari kill.
+    // Tier 1: immediate atari kill, but never a suicide throw-in: the
+    // killing point itself must not end in atari (snapback/eye-steal).
+    // Capturing kills that live on are still returned.
     m = findAtariKill(b, player, moves);
-    if (m >= 0)
-        return m;
-    // Tier 2: escape our 1-lib group.
+    if (m >= 0) {
+        copyBoard(probeBoard, b);
+        copyBoard(probeKo, koB);
+        var ktest = simTryPlace(probeBoard, probeKo, koActive, player,
+                                moves[m].r, moves[m].c);
+        if (ktest.success &&
+            countLibertiesOn(probeBoard, moves[m].r, moves[m].c, player) > 1)
+            return m;
+        // Suspicious kill (ends in atari): fall through to Tier 2/3 and
+        // the scored fallback instead of forcing it.
+    }
+    // Tier 2: escape our 1-lib group, skipping escapes that stay in
+    // atari without capturing (ladder-following, snapback-feeding).
     for (r = 0; r < BOARD_SIZE; r++) {
         for (c = 0; c < BOARD_SIZE; c++) {
             var idx = boardIndex(r, c);
@@ -689,7 +747,9 @@ function findTacticalMove(b, koB, koActive, player, moves, lastR, lastC) {
                 var lib = findLiberty(b, r, c);
                 if (lib.r >= 0) {
                     m = findMoveIndex(moves, lib.r, lib.c);
-                    if (m >= 0)
+                    if (m >= 0 &&
+                        !putsSelfInAtari(b, koB, koActive, player,
+                                         moves[m].r, moves[m].c))
                         return m;
                 }
             }
@@ -832,6 +892,25 @@ function chooseScoredMove(b, koB, koActiveObj, player, moves, lastR, lastC) {
     return -1;
 }
 
+// Terminal scoring that does not reward dead stones: before Tromp-Taylor
+// counting, strip groups with <=1 liberty (likely dead at playout end) so
+// self-atari invasions score as losses, not free points. Single pass over
+// the terminal position; uses probeBoard as scratch (playout is finished).
+function scoreBoardDeadAware(b) {
+    copyBoard(probeBoard, b);
+    for (var r = 0; r < BOARD_SIZE; r++) {
+        for (var c = 0; c < BOARD_SIZE; c++) {
+            var idx = boardIndex(r, c);
+            var col = probeBoard[idx];
+            if (col !== BLACK && col !== WHITE)
+                continue;
+            if (countLibertiesOn(probeBoard, r, c, col) <= 1)
+                removeGroupOn(probeBoard, r, c, col);
+        }
+    }
+    return scoreBoard(probeBoard);
+}
+
 function mctsPlayout(initialPlayer) {
     copyBoard(playBoard, simBoard);
     copyBoard(playKoBoard, simKoBoard);
@@ -894,7 +973,7 @@ function mctsPlayout(initialPlayer) {
         playoutMoves++;
     }
 
-    var score = scoreBoard(playBoard);
+    var score = scoreBoardDeadAware(playBoard);
     return (score > 0) ? 1 : 0;
 }
 
@@ -1370,9 +1449,8 @@ function handleAiRequest(payload) {
     }
 
     // Forced capture shortcut: a hanging 1-lib enemy group is captured
-    // outright (ko-legality verified) instead of searched. At 300-1000
-    // iterations the tree cannot reliably rank tactics; capturing is right
-    // ~always (known limitation: snapback traps are not detected).
+    // outright when tactically sound. Snapback/throw-in traps are filtered
+    // by isUnsafeCapture — those fall through to full search instead.
     var rootMoves = getLegalMovesOn(gBoard, gKoBoard, gKoActive, currentPlayer);
     var killIdx = findAtariKill(gBoard, currentPlayer, rootMoves);
     if (killIdx >= 0) {
@@ -1380,10 +1458,14 @@ function handleAiRequest(payload) {
         copyBoard(probeKo, gKoBoard);
         var ktest = simTryPlace(probeBoard, probeKo, gKoActive, currentPlayer,
                                 rootMoves[killIdx].r, rootMoves[killIdx].c);
-        if (ktest.success) {
+        if (ktest.success &&
+            !isUnsafeCapture(gBoard, gKoBoard, gKoActive, currentPlayer,
+                             rootMoves[killIdx].r, rootMoves[killIdx].c)) {
             console.log('pkjs: forced capture at (' + rootMoves[killIdx].r + ',' + rootMoves[killIdx].c + ')');
             sendMoveReply(rootMoves[killIdx].r, rootMoves[killIdx].c, 0);
             return;
+        } else {
+            console.log('pkjs: atari kill looks unsafe (snapback?), searching instead');
         }
     }
 
@@ -1395,6 +1477,40 @@ function handleAiRequest(payload) {
 
     var best = mctsGetBestMove();
     console.log('pkjs: best node index=' + best);
+
+    // Root safety veto: never play an immediately-dead move when a tried
+    // alternative exists. If the visits-winner is a pure self-atari (or
+    // fills our own eye), walk down the visit ranking for the first safe
+    // stone. Captures are never vetoed (putsSelfInAtari is false for them).
+    if (best !== MCTS_NO_NODE) {
+        var bn = nodePool[best];
+        if (bn.moveRow !== MCTS_PASS_ROW &&
+            (putsSelfInAtari(gBoard, gKoBoard, gKoActive, currentPlayer,
+                             bn.moveRow, bn.moveCol) ||
+             fillsOwnEye(gBoard, bn.moveRow, bn.moveCol, currentPlayer))) {
+            console.log('pkjs: veto unsafe best (' + bn.moveRow + ',' + bn.moveCol + '), seeking safe alternative');
+            var cands = [];
+            var ch = nodePool[rootNode].firstChild;
+            while (ch !== MCTS_NO_NODE && ch < MCTS_POOL_SIZE) {
+                var cn = nodePool[ch];
+                if (cn.moveRow !== MCTS_PASS_ROW && cn.visits > 0)
+                    cands.push(ch);
+                ch = cn.nextSibling;
+            }
+            cands.sort(function(a, b) { return nodePool[b].visits - nodePool[a].visits; });
+            for (var ci = 0; ci < cands.length && ci < 10; ci++) {
+                var cand = nodePool[cands[ci]];
+                if (!putsSelfInAtari(gBoard, gKoBoard, gKoActive,
+                                     currentPlayer, cand.moveRow, cand.moveCol) &&
+                    !fillsOwnEye(gBoard, cand.moveRow, cand.moveCol,
+                                 currentPlayer)) {
+                    console.log('pkjs: veto -> safe (' + cand.moveRow + ',' + cand.moveCol + ') visits=' + cand.visits);
+                    best = cands[ci];
+                    break;
+                }
+            }
+        }
+    }
 
     var moveRow, moveCol, isPass;
     if (best === MCTS_NO_NODE) {
