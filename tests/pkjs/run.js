@@ -220,20 +220,41 @@ test('refuses early pass with an error, even on a full board', () => {
     assert.deepStrictEqual([r[1], r[2]], [4, 5], 'white must capture at (4,5)');
 });
 
+test('escapes its own atari instead of tenuki', () => {
+    loadPkjs();
+    // Mirror: Black stone (4,4) has one liberty left at (4,5); Black to
+    // move must escape there. Tenuki looks deceptively good in random
+    // playouts (the simulated opponent marches into walls instead of the
+    // open board), so this only passes via the escape-urgency prior plus
+    // honest playout defenses — never via raw statistics.
+    const board = new Array(81).fill(0);
+    board[4 * 9 + 4] = 1;
+    board[3 * 9 + 4] = 2;
+    board[5 * 9 + 4] = 2;
+    board[4 * 9 + 3] = 2;
+    const msgs = aiRequest({ 0: 0, 1: 1, 2: 4, 3: 4, 4: 0, 5: board, 6: validKo(), 7: 10 });
+    const r = assertSingleReply(msgs);
+    assert.strictEqual(r[3], 0, 'black should play a stone, not pass');
+    assert.deepStrictEqual([r[1], r[2]], [4, 5], 'black must escape at (4,5)');
+});
+
 /* --- life as policy (items A/E): build eyes, don't fill them --- */
 
 test('plays the eye-dividing point', () => {
     loadPkjs();
     // Black walls enclose (2,2)+(2,3)+(2,4) with a shared wall gap at
     // (2,3): playing there splits the interior into two 1-point eyes.
-    // Playout statistics cannot resolve a 2-point edge through 120 random
-    // moves, so this only passes via the eye prior/tier, not via search.
+    // White's (4,6) peep threatens the framework, so statistics agree with
+    // knowledge here (a far-away white leaves it a visit-arithmetic coin
+    // flip no test should pin). Playout statistics alone cannot resolve a
+    // 2-point edge through 120 random moves, so this only passes via the
+    // eye prior/tier, not via search.
     const board = new Array(81).fill(0);
     [[1, 1], [1, 2], [1, 3], [1, 4], [1, 5],
      [2, 1], [2, 5],
      [3, 1], [3, 2], [3, 3], [3, 4], [3, 5]].forEach(([r, c]) => board[r * 9 + c] = 1);
     board[6 * 9 + 6] = 2;
-    board[7 * 9 + 7] = 2;
+    board[4 * 9 + 6] = 2;
     const msgs = aiRequest({ 0: 0, 1: 1, 2: 0, 3: 0, 4: 0, 5: board, 6: validKo(), 7: 20 });
     const r = assertSingleReply(msgs);
     assert.strictEqual(r[3], 0, 'black should play a stone, not pass');
@@ -253,6 +274,45 @@ test('never fills its own finished eye', () => {
     assert.strictEqual(r[3], 0, 'black should play a stone, not pass');
     assert.ok(!(r[1] === 2 && r[2] === 2), 'black must not fill its eye at (2,2)');
     assert.strictEqual(board[r[1] * 9 + r[2]], 0, 'reply must be on an empty point');
+});
+
+test('does not march into a broken ladder', () => {
+    loadPkjs();
+    // Black (4,4) in atari with liberty (4,5), but a white wall along
+    // column 6 funnels the chase to the edge: the escape dies. The AI must
+    // tenuki anywhere else instead of donating the group.
+    const board = new Array(81).fill(0);
+    board[4 * 9 + 4] = 1;
+    [[3, 4], [5, 4], [4, 3], [2, 6], [3, 6], [4, 6], [5, 6], [2, 5]].forEach(([r, c]) => board[r * 9 + c] = 2);
+    const msgs = aiRequest({ 0: 0, 1: 1, 2: 4, 3: 4, 4: 0, 5: board, 6: validKo(), 7: 10 });
+    const r = assertSingleReply(msgs);
+    assert.strictEqual(r[3], 0, 'black should play a stone, not pass');
+    assert.ok(!(r[1] === 4 && r[2] === 5), 'black must not escape into the broken ladder at (4,5)');
+    assert.strictEqual(board[r[1] * 9 + r[2]], 0, 'reply must be on an empty point');
+});
+
+/* --- fuseki book (moves 2-9): pro shape instead of noise --- */
+
+test('fuseki takes the empty corner on move 3', () => {
+    loadPkjs();
+    // B(3,3), W(5,5): the emptiest quadrant star is (2,6).
+    const board = new Array(81).fill(0);
+    board[3 * 9 + 3] = 1;
+    board[5 * 9 + 5] = 2;
+    const msgs = aiRequest({ 0: 0, 1: 1, 2: 5, 3: 5, 4: 0, 5: board, 6: validKo(), 7: 2 });
+    const r = assertSingleReply(msgs);
+    assert.deepStrictEqual([r[1], r[2], r[3]], [2, 6, 0]);
+});
+
+test('fuseki encloses an approached 4-4', () => {
+    loadPkjs();
+    // B(3,3) approached low at (3,5): extend the other side (5,3).
+    const board = new Array(81).fill(0);
+    board[3 * 9 + 3] = 1;
+    board[3 * 9 + 5] = 2;
+    const msgs = aiRequest({ 0: 0, 1: 1, 2: 3, 3: 5, 4: 0, 5: board, 6: validKo(), 7: 2 });
+    const r = assertSingleReply(msgs);
+    assert.deepStrictEqual([r[1], r[2], r[3]], [5, 3, 0]);
 });
 
 /* --- retry explores: consecutive identical requests stay valid --- */
