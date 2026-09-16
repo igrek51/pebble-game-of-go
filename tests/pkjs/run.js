@@ -11,6 +11,10 @@
  */
 'use strict';
 
+// Hermetic tests: disable background pondering (it only warms cross-move
+// AMAF via setTimeout slices, which would leak CPU/noise between cases).
+process.env.PEBBLE_NO_PONDER = '1';
+
 const assert = require('assert');
 const path = require('path');
 
@@ -214,6 +218,41 @@ test('refuses early pass with an error, even on a full board', () => {
     const r = assertSingleReply(msgs);
     assert.strictEqual(r[3], 0, 'white should play a stone, not pass');
     assert.deepStrictEqual([r[1], r[2]], [4, 5], 'white must capture at (4,5)');
+});
+
+/* --- life as policy (items A/E): build eyes, don't fill them --- */
+
+test('plays the eye-dividing point', () => {
+    loadPkjs();
+    // Black walls enclose (2,2)+(2,3)+(2,4) with a shared wall gap at
+    // (2,3): playing there splits the interior into two 1-point eyes.
+    // Playout statistics cannot resolve a 2-point edge through 120 random
+    // moves, so this only passes via the eye prior/tier, not via search.
+    const board = new Array(81).fill(0);
+    [[1, 1], [1, 2], [1, 3], [1, 4], [1, 5],
+     [2, 1], [2, 5],
+     [3, 1], [3, 2], [3, 3], [3, 4], [3, 5]].forEach(([r, c]) => board[r * 9 + c] = 1);
+    board[6 * 9 + 6] = 2;
+    board[7 * 9 + 7] = 2;
+    const msgs = aiRequest({ 0: 0, 1: 1, 2: 0, 3: 0, 4: 0, 5: board, 6: validKo(), 7: 20 });
+    const r = assertSingleReply(msgs);
+    assert.strictEqual(r[3], 0, 'black should play a stone, not pass');
+    assert.deepStrictEqual([r[1], r[2]], [2, 3], 'black must divide at (2,3)');
+});
+
+test('never fills its own finished eye', () => {
+    loadPkjs();
+    // Black ring with a single-point eye at (2,2); filling it is vetoed.
+    const board = new Array(81).fill(0);
+    [[1, 1], [1, 2], [1, 3], [2, 1], [2, 3], [3, 1], [3, 2], [3, 3]].forEach(([r, c]) => board[r * 9 + c] = 1);
+    board[6 * 9 + 6] = 2;
+    board[6 * 9 + 7] = 2;
+    board[7 * 9 + 6] = 2;
+    const msgs = aiRequest({ 0: 0, 1: 1, 2: 0, 3: 0, 4: 0, 5: board, 6: validKo(), 7: 20 });
+    const r = assertSingleReply(msgs);
+    assert.strictEqual(r[3], 0, 'black should play a stone, not pass');
+    assert.ok(!(r[1] === 2 && r[2] === 2), 'black must not fill its eye at (2,2)');
+    assert.strictEqual(board[r[1] * 9 + r[2]], 0, 'reply must be on an empty point');
 });
 
 /* --- retry explores: consecutive identical requests stay valid --- */

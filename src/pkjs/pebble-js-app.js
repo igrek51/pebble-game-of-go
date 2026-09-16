@@ -5,34 +5,41 @@ var MCTS_PASS_ROW = 9;
 var MCTS_PASS_COL = 9;
 var MCTS_POOL_SIZE = 10000;
 var MCTS_NO_NODE = -1;
-var MCTS_ITERATIONS = 1000;
+var MCTS_ITERATIONS = 500;
 var MCTS_MAX_PLAYOUT = 120;
 // Passing is strictly prohibited before this many moves have been made
 // (passes possible starting with the 41st move). Mirrored in main.c
 // (AI_PASS_MIN_MOVES); when the search wants to pass earlier, or finds no
 // move at all, an error reply (isPass 2) is sent so the watch reports it
 // instead of silently passing.
-var PKJS_PASS_MIN_MOVES = 40;// Wall-clock budget for one AI move. The watch falls back to its local AI
+var PKJS_PASS_MIN_MOVES = 40;// Wall-clock budget for one AI move. The watch gives up on the companion
 // after COMM_TIMEOUT_MS (72000ms), so the reply must leave well before that,
-// including AppMessage transport time. Phone JS engines are much slower than
-// desktop V8 (300 iterations measured ~1.7s on V8), so mctsRun() stops early
-// once this budget is exceeded instead of running all iterations.
-var MCTS_TIME_BUDGET_MS = 60000;
+// including AppMessage transport time. Replies are also a UX latency: with
+// priors/tactics doing the steering, some hundred iterations pick as well as
+// a minute-long grind (playout noise dominates either way), so the budget is
+// deliberately short — strength comes from speed (more iterations/sec via
+// capped liberties + typed boards), not from thinking longer.
+var MCTS_TIME_BUDGET_MS = 20000;
 
 var nodePool = [];
 var nodePoolUsed = 0;
 var rootNode = MCTS_NO_NODE;
 
-var simBoard = [];
-var simKoBoard = [];
+// Board buffers as Uint8Array: copies become native memcpy (.set()) instead
+// of 81-iteration JS loops, and element access stays identical. This is the
+// single biggest phone-speed win after capped liberties: simTryPlace alone
+// used to copy 2x81 cells per attempted move. gBoard/gKoBoard stay plain
+// (payload-filled); everything else below is typed.
+var simBoard = new Uint8Array(BOARD_SIZE * BOARD_SIZE);
+var simKoBoard = new Uint8Array(BOARD_SIZE * BOARD_SIZE);
 var simKoActive = false;
 var simPlayer = EMPTY;
 var simLastRow = -1;
 var simLastCol = -1;
 var simPasses = 0;
 
-var playBoard = [];
-var playKoBoard = [];
+var playBoard = new Uint8Array(BOARD_SIZE * BOARD_SIZE);
+var playKoBoard = new Uint8Array(BOARD_SIZE * BOARD_SIZE);
 var playKoActive = false;
 var playPlayer = EMPTY;
 var playLastRow = -1;
@@ -41,10 +48,14 @@ var playPasses = 0;
 
 var mctsPath = [];
 var mctsPathLen = 0;
+// RAVE bookkeeping per path node: playHistN at arrival (subsequent moves
+// = hist entries at index >= this) and player to move at the node.
+var mctsPathHist = [];
+var mctsPathQ = [];
 
-var simTempBoard = [];
-var probeBoard = [];  // scratch for tactical simulations (capture/eye/self-atari tests)
-var probeKo = [];
+var simTempBoard = new Uint8Array(BOARD_SIZE * BOARD_SIZE);
+var probeBoard = new Uint8Array(BOARD_SIZE * BOARD_SIZE);  // scratch for tactical simulations (capture/eye/self-atari tests)
+var probeKo = new Uint8Array(BOARD_SIZE * BOARD_SIZE);
 var gBoard = [];
 var gKoBoard = [];
 var gKoActive = false;
@@ -66,11 +77,11 @@ var dfsGen = 0;
 for (var _di = 0; _di < BOARD_SIZE * BOARD_SIZE; _di++)
     dfsSeen[_di] = 0;
 
-// RAVE/AMAF: global all-moves-as-first statistics. amafV[color][idx] counts
-// playouts where `color` played idx; amafW counts those the mover eventually
-// won. Shared across the whole tree, so even a few hundred iterations rank
-// moves sensibly. Blend weight beta = K/(K+visits) fades toward pure UCT.
-var AMAF_K = 500;
+// Global AMAF: LONG-TERM memory across moves (ponder channel, item E).
+// Decayed (halved) per request in initPools, never reset mid-game. Read in
+// uct() only as a weak +/-30 pull; per-node RAVE above is the primary
+// within-search signal. amafV[color][idx] counts playouts where `color`
+// played idx; amafW counts those the mover eventually won.
 var amafV = [[], [], []];
 var amafW = [[], [], []];
 
@@ -126,32 +137,31 @@ function mctsRng() {
     return rngState >>> 0;
 }
 
-function initPools() {
+function initPools(resetAmaf) {
     nodePool = [];
     nodePoolUsed = 0;
     rootNode = MCTS_NO_NODE;
+    simBoard.fill(0);
+    simKoBoard.fill(0);
+    playBoard.fill(0);
+    playKoBoard.fill(0);
+    simTempBoard.fill(0);
+    probeBoard.fill(0);
+    probeKo.fill(0);
     for (var i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
-        if (simBoard.length <= i) {
-            simBoard[i] = 0;
-            simKoBoard[i] = 0;
-            playBoard[i] = 0;
-            playKoBoard[i] = 0;
-            simTempBoard[i] = 0;
-            probeBoard[i] = 0;
-            probeKo[i] = 0;
+        if (resetAmaf) {
+            amafV[BLACK][i] = 0;
+            amafW[BLACK][i] = 0;
+            amafV[WHITE][i] = 0;
+            amafW[WHITE][i] = 0;
         } else {
-            simBoard[i] = 0;
-            simKoBoard[i] = 0;
-            playBoard[i] = 0;
-            playKoBoard[i] = 0;
-            simTempBoard[i] = 0;
-            probeBoard[i] = 0;
-            probeKo[i] = 0;
+            // Tree knowledge reuse across moves (item E): keep AMAF with
+            // halving decay so last move's lessons steer but never dominate.
+            amafV[BLACK][i] = Math.floor((amafV[BLACK][i] || 0) / 2);
+            amafW[BLACK][i] = Math.floor((amafW[BLACK][i] || 0) / 2);
+            amafV[WHITE][i] = Math.floor((amafV[WHITE][i] || 0) / 2);
+            amafW[WHITE][i] = Math.floor((amafW[WHITE][i] || 0) / 2);
         }
-        amafV[BLACK][i] = 0;
-        amafW[BLACK][i] = 0;
-        amafV[WHITE][i] = 0;
-        amafW[WHITE][i] = 0;
     }
     playHistN = 0;
     simKoActive = false;
@@ -189,7 +199,27 @@ function allocNode(moveRow, moveCol, player) {
         nextSibling: MCTS_NO_NODE,
         moveRow: moveRow,
         moveCol: moveCol,
-        player: player
+        player: player,
+        // Benson alive-count prior (capped stones), set at expansion.
+        // Siblings share the pre-move position, so ranking by alive-after
+        // equals ranking by alive-delta. Read in uct(), zero for pass/unset.
+        prior: 0,
+        // Item A eye prior: 12 = divides interior into 2+ eyes, 3 =
+        // solidifies. Added FLAT in uct() (not via the clamped AMAF pr):
+        // on open boards playout winrates cannot resolve a 2-point eye
+        // edge through 120 random moves (noise is hundreds of points),
+        // so only a decisive persistent bonus steers the root choice.
+        // Urgent kill/escape lines still win on real exploit (near-certain
+        // wins shift exploit by 300+). Set at root + expansion, zero for
+        // pass/unset.
+        eye: 0,
+        // 3x3 pattern prior (net weight, may be negative for triangles).
+        // Flat in uct() like eye but smaller (+/-25 per weight).
+        pat: 0,
+        // Per-node RAVE (Aya-style): outcomes of playouts passing through
+        // the PARENT where this move was played later by the side to move.
+        raveV: 0,
+        raveW: 0
     };
     return idx;
 }
@@ -216,6 +246,95 @@ function shapeScore(r, c) {
     if (r >= 2 && r <= 6 && c >= 2 && c <= 6)
         return 1200;
     return 0;
+}
+
+// ---- 3x3 shape patterns (Aya/MoGo-style) ----
+// Aya learned these from 10,000 pro games; same mechanism here with a
+// hand-written seed set (extendable without retraining). Alphabet:
+// 'X' own, 'O' opponent, '.' empty, '#' off-board, ' ' don't-care.
+// Center (index 4) is always our move point, hence '.'. All 8 symmetries
+// are precomputed at load. Matched ONLY near the last move (Fuego/MoGo:
+// patterns are local tactics), which also bounds the cost.
+var PATTERNS_BASE = [
+    { w: 1, g: ["X.X", "...", "..."] }, // straight 1-gap connection
+    { w: 1, g: [" X ", "X X", "..."] }, // tiger mouth (cutting-point defense)
+    { w: 1, g: [" O ", "X. ", "..."] }, // hane around enemy stone
+    { w: 1, g: [" X ", " . ", " O "] }, // contact peep
+    { w: 1, g: ["X..", " . ", "..X"] }, // diagonal solidify
+    { w: 1, g: [" X ", " . ", " X "] }, // bamboo joint
+    { w: -1, g: ["XX ", "X. ", "..."] } // EMPTY TRIANGLE (universally bad)
+];
+
+var PATS = [];
+
+(function initPats() {
+    var seen = {};
+    function xf(t, x, y) {
+        if (t === 0) return [x, y];
+        if (t === 1) return [2 - y, x];
+        if (t === 2) return [2 - x, 2 - y];
+        if (t === 3) return [y, 2 - x];
+        if (t === 4) return [2 - x, y];
+        if (t === 5) return [x, 2 - y];
+        if (t === 6) return [y, x];
+        return [2 - y, 2 - x];
+    }
+    for (var p = 0; p < PATTERNS_BASE.length; p++) {
+        var base = PATTERNS_BASE[p];
+        for (var t = 0; t < 8; t++) {
+            var cells = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+            for (var y = 0; y < 3; y++) {
+                for (var x = 0; x < 3; x++) {
+                    var q = xf(t, x, y);
+                    var ch = base.g[q[1]][q[0]];
+                    var v = 0;
+                    if (ch === 'X') v = 1;
+                    else if (ch === 'O') v = 2;
+                    else if (ch === '.') v = 3;
+                    else if (ch === '#') v = 4;
+                    cells[y * 3 + x] = v;
+                }
+            }
+            var key = cells.join('') + ':' + base.w;
+            if (!seen[key]) {
+                seen[key] = true;
+                PATS.push({ cells: cells, w: base.w });
+            }
+        }
+    }
+})();
+
+// Net pattern weight at (r,c) for `player` on pre-move (b): +N good hits,
+// -N triangle hits, 0 none. Caller gates to near-last-move + contender caps.
+function patBonus(b, r, c, player) {
+    var opp = (player === BLACK) ? WHITE : BLACK;
+    var v = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+    for (var i = 0; i < 9; i++) {
+        var nr = r + Math.floor(i / 3) - 1, nc = c + (i % 3) - 1;
+        var nidx = boardIndex(nr, nc);
+        if (nidx < 0)
+            v[i] = -1;
+        else
+            v[i] = b[nidx];
+    }
+    if (v[4] !== EMPTY)
+        return 0;
+    var net = 0;
+    for (var p = 0; p < PATS.length; p++) {
+        var cells = PATS[p].cells, ok = true;
+        for (var k = 0; k < 9; k++) {
+            var e = cells[k];
+            if (e === 0)
+                continue;
+            if (e === 1 && v[k] !== player) { ok = false; break; }
+            if (e === 2 && v[k] !== opp) { ok = false; break; }
+            if (e === 3 && v[k] !== EMPTY) { ok = false; break; }
+            if (e === 4 && v[k] !== -1) { ok = false; break; }
+        }
+        if (ok)
+            net += PATS[p].w;
+    }
+    return net;
 }
 
 function uct(childIdx, parentVisits) {
@@ -254,37 +373,63 @@ function uct(childIdx, parentVisits) {
 
     var value = exploit + Math.floor(numerator / rootN);
 
-    // RAVE/AMAF blend with heuristic (shape) initialization, MoGo-style.
-    // Every move starts with PRIOR_W pseudo-observations at priorRate, so
-    // selection is guided before any playout data exists; real AMAF data
-    // dilutes the prior, and beta fades the whole blend toward pure UCT
-    // with visits. Pass uses the neutral 0.5 prior. This keeps all children
-    // (including pass) on one comparable scale.
-    var AMAF_PRIOR_W = 20;
+    // Per-node RAVE (Aya-style) with heuristic initialization.
+    // Prior rate pr blends shape + Benson alive gradient; RAVE_PRIOR_W
+    // pseudo-observations guide before real data exists. Yamashita beta
+    // sqrt(100/(3v+100)) fades toward pure UCT fast (10% weight by ~300
+    // visits), unlike the old K=500 global blend that stayed
+    // prior-dominated for hundreds of visits.
+    var RAVE_PRIOR_W = 20;
     var pr = passPrior;
     if (node.moveRow !== MCTS_PASS_ROW) {
         pr = 0.5 + shapeScore(node.moveRow, node.moveCol) / 2000;
+        // Benson alive gradient (item C): prefer lines that leave the mover
+        // with more unconditionally-alive stones. Cached at expansion;
+        // capped at 8 stones * 0.04 = +0.32 so it steers without drowning
+        // shape or real statistics. Fades with visits via beta like shape.
+        if (node.prior > 0) {
+            pr += Math.min(node.prior, 8) * 0.04;
+        }
         if (pr < 0)
             pr = 0;
         if (pr > 1)
             pr = 1;
     }
-    var arNum = AMAF_PRIOR_W * pr;
-    var arDen = AMAF_PRIOR_W;
+    var beta = Math.sqrt(100 / (3 * v + 100));
+    var rV = node.raveV || 0, rW = node.raveW || 0;
+    var raveRate = (rW + RAVE_PRIOR_W * pr) / (rV + RAVE_PRIOR_W);
+    value = Math.floor((1 - beta) * value + beta * raveRate * 1000);
+
+    // Long-term memory (ponder channel): global AMAF persists across moves
+    // with halving decay; weak +/-30 pull so fresh per-node RAVE dominates.
     if (node.moveRow !== MCTS_PASS_ROW && node.player !== EMPTY) {
-        var ridx = node.moveRow * BOARD_SIZE + node.moveCol;
-        arNum += amafW[node.player][ridx];
-        arDen += amafV[node.player][ridx];
+        var gidx = node.moveRow * BOARD_SIZE + node.moveCol;
+        var gV = amafV[node.player][gidx] || 0;
+        if (gV > 0) {
+            var gR = (amafW[node.player][gidx] || 0) / gV;
+            value += Math.floor(60 * (gR - 0.5));
+        }
     }
-    var beta = AMAF_K / (AMAF_K + v);
-    value = Math.floor((1 - beta) * value + beta * (arNum / arDen) * 1000);
+
+    // Item A: flat eye bonus (divider +300, solidify +75). Deliberately
+    // outside the RAVE blend: playout noise drowns small eye edges, so the
+    // bonus must be decisive to steer root choice.
+    if (node.eye > 0)
+        value += Math.floor(node.eye * 25);
+    // 3x3 pattern flat: good shapes +, empty triangles -.
+    if (node.pat !== 0)
+        value += node.pat * 25;
 
     return value;
 }
 
 function copyBoard(dst, src) {
-    for (var i = 0; i < BOARD_SIZE * BOARD_SIZE; i++)
-        dst[i] = src[i];
+    if (dst.set)
+        dst.set(src);
+    else {
+        for (var i = 0; i < BOARD_SIZE * BOARD_SIZE; i++)
+            dst[i] = src[i];
+    }
 }
 
 function countLibertiesOn(b, startRow, startCol, color) {
@@ -324,7 +469,83 @@ function countLibertiesOn(b, startRow, startCol, color) {
     return liberties;
 }
 
+// Capped liberty count: returns min(actual, cap). Atari/2-lib scans only
+// need ==1 / ==2 verdicts; stopping early avoids flooding big groups and
+// is 5-20x faster than a full count on open boards. Pure function of (b)
+// via the shared dfsSeen generations (sequential use only).
+// Reuses module scratch stacks (no per-call allocation in the hot loop).
+// Group memo: recounts of the same group are skipped via (mark,cap,boardGen).
+// boardGen bumps on every successful placement/removal, so entries are only
+// reused while the position is unchanged (i.e. within one scan) — a capture
+// freeing a neighbor's liberty can never read stale. All verdicts are exact:
+// same group + same cap + same position => same count.
+var libStackR = [];
+var libStackC = [];
+var libMemoMark = -1;
+var libMemoCap = 0;
+var libMemoVal = 0;
+var libMemoGen = -1;
+var boardGen = 0;
+
+function countLibertiesCapped(b, startRow, startCol, color, cap) {
+    var startIdx = boardIndex(startRow, startCol);
+    if (startIdx < 0 || b[startIdx] !== color)
+        return 0;
+    if (libMemoGen === boardGen && libMemoCap === cap &&
+        dfsSeen[startIdx] === libMemoMark)
+        return libMemoVal;
+
+    dfsGen++;
+    var mark = dfsGen;
+
+    var libs = 0;
+
+    var top = 0;
+    libStackR[top] = startRow;
+    libStackC[top] = startCol;
+    top++;
+    dfsSeen[startIdx] = mark;
+
+    var dr = [-1, 1, 0, 0];
+    var dc = [0, 0, -1, 1];
+
+    while (top > 0) {
+        top--;
+        var r = libStackR[top], c = libStackC[top];
+        for (var d = 0; d < 4; d++) {
+            var nr = r + dr[d];
+            var nc = c + dc[d];
+            var nidx = boardIndex(nr, nc);
+            if (nidx < 0 || dfsSeen[nidx] === mark)
+                continue;
+            var ns = b[nidx];
+            if (ns === EMPTY) {
+                libs++;
+                if (libs >= cap) {
+                    libMemoMark = mark;
+                    libMemoCap = cap;
+                    libMemoVal = libs;
+                    libMemoGen = boardGen;
+                    return libs;
+                }
+                dfsSeen[nidx] = mark;
+            } else if (ns === color) {
+                dfsSeen[nidx] = mark;
+                libStackR[top] = nr;
+                libStackC[top] = nc;
+                top++;
+            }
+        }
+    }
+    libMemoMark = mark;
+    libMemoCap = cap;
+    libMemoVal = libs;
+    libMemoGen = boardGen;
+    return libs;
+}
+
 function removeGroupOn(b, startRow, startCol, color) {
+    boardGen++;
     dfsGen++;
     var mark = dfsGen;
 
@@ -417,13 +638,13 @@ function getLegalMovesOn(b, koB, koActive, player, fast) {
                 var nr = row + dr[d], nc = col + dc[d];
                 var nidx = boardIndex(nr, nc);
                 if (nidx >= 0 && b[nidx] === opp) {
-                    if (countLibertiesOn(b, nr, nc, opp) === 0) {
+                    if (countLibertiesCapped(b, nr, nc, opp, 1) === 0) {
                         anyCaptured = true;
                     }
                 }
             }
 
-            if (!anyCaptured && countLibertiesOn(b, row, col, player) === 0) {
+            if (!anyCaptured && countLibertiesCapped(b, row, col, player, 1) === 0) {
                 legal = false;
             }
 
@@ -457,8 +678,7 @@ function simTryPlace(b, koB, koActiveFlag, player, row, col) {
 
     var opponent = (player === BLACK) ? WHITE : BLACK;
 
-    for (var i = 0; i < BOARD_SIZE * BOARD_SIZE; i++)
-        simTempBoard[i] = b[i];
+    copyBoard(simTempBoard, b);
 
     b[idx] = player;
 
@@ -473,15 +693,14 @@ function simTryPlace(b, koB, koActiveFlag, player, row, col) {
         if (nidx < 0)
             continue;
         if (b[nidx] === opponent &&
-            countLibertiesOn(b, nr, nc, opponent) === 0) {
+            countLibertiesCapped(b, nr, nc, opponent, 1) === 0) {
             removeGroupOn(b, nr, nc, opponent);
             anyCaptured = true;
         }
     }
 
-    if (countLibertiesOn(b, row, col, player) === 0) {
-        for (var i = 0; i < BOARD_SIZE * BOARD_SIZE; i++)
-            b[i] = simTempBoard[i];
+    if (countLibertiesCapped(b, row, col, player, 1) === 0) {
+        copyBoard(b, simTempBoard);
         return {success: false, koActive: koActiveFlag};
     }
 
@@ -494,16 +713,15 @@ function simTryPlace(b, koB, koActiveFlag, player, row, col) {
             }
         }
         if (equal) {
-            for (var i = 0; i < BOARD_SIZE * BOARD_SIZE; i++)
-                b[i] = simTempBoard[i];
+            copyBoard(b, simTempBoard);
             return {success: false, koActive: koActiveFlag};
         }
     }
 
-    for (var i = 0; i < BOARD_SIZE * BOARD_SIZE; i++)
-        koB[i] = simTempBoard[i];
+    copyBoard(koB, simTempBoard);
     koActiveFlag = anyCaptured;
 
+    boardGen++;
     return {success: true, koActive: koActiveFlag};
 }
 
@@ -616,7 +834,7 @@ function putsSelfInAtari(b, koB, koActiveFlag, player, r, c) {
     }
     if (after < before)
         return false;
-    return countLibertiesOn(probeBoard, r, c, player) === 1;
+    return countLibertiesCapped(probeBoard, r, c, player, 2) === 1;
 }
 
 // Collect distinct empty liberties of the `color` group containing (sr,sc)
@@ -652,6 +870,213 @@ function groupLiberties(b, sr, sc, color, out) {
     return n;
 }
 
+// ---- eye creation (item A) ----
+// Count interior empty regions adjacent to the new stone at (r,c) on the
+// POST-move board: flood each adjacent empty (cap 13 cells); a region is
+// interior when the flood never reaches the edge and never touches an
+// opponent stone. Returns 0-2 (early exit at 2). Uses its own generations
+// on the shared dfsSeen buffer (sequential use only).
+function eyeInteriorRegions(pb, r, c, player) {
+    var opp = (player === BLACK) ? WHITE : BLACK;
+    var dr = [-1, 1, 0, 0], dc = [0, 0, -1, 1];
+    dfsGen++;
+    var doneMark = dfsGen;
+    var found = 0;
+    for (var d = 0; d < 4; d++) {
+        var sr = r + dr[d], sc = c + dc[d];
+        var sidx = boardIndex(sr, sc);
+        if (sidx < 0 || pb[sidx] !== EMPTY || dfsSeen[sidx] === doneMark)
+            continue;
+        dfsGen++;
+        var floodMark = dfsGen;
+        var stackR = [sr], stackC = [sc], top = 1, cells = [sidx];
+        dfsSeen[sidx] = floodMark;
+        var open = false, contested = false, n = 0;
+        while (top > 0 && n < 13) {
+            top--;
+            var cr = stackR[top], cc = stackC[top];
+            n++;
+            for (var e = 0; e < 4; e++) {
+                var nr = cr + dr[e], nc = cc + dc[e];
+                var nidx = boardIndex(nr, nc);
+                if (nidx < 0) {
+                    open = true;
+                    continue;
+                }
+                if (pb[nidx] === opp) {
+                    contested = true;
+                    continue;
+                }
+                if (pb[nidx] !== EMPTY || dfsSeen[nidx] === floodMark)
+                    continue;
+                dfsSeen[nidx] = floodMark;
+                stackR[top] = nr;
+                stackC[top] = nc;
+                top++;
+                cells.push(nidx);
+            }
+        }
+        for (var k = 0; k < cells.length; k++)
+            dfsSeen[cells[k]] = doneMark;
+        if (!open && !contested) {
+            found++;
+            if (found >= 2)
+                return found;
+        }
+    }
+    return found;
+}
+
+// Prefilter for eye candidates on pre-move (b): true when the point is
+// attached to our shape (2+ own orthogonal neighbors) or sits in a small
+// enclosed region (flood from the point stays <=14 cells with no opponent
+// border and no edge reach). Open-board and fighting points fail fast.
+function eyeCandidate(b, player, r, c) {
+    var dr = [-1, 1, 0, 0], dc = [0, 0, -1, 1];
+    var own = 0, oppAdj = false;
+    for (var d = 0; d < 4; d++) {
+        var nidx = boardIndex(r + dr[d], c + dc[d]);
+        if (nidx >= 0 && b[nidx] === player)
+            own++;
+    }
+    if (own >= 2)
+        return true;
+    var opp = (player === BLACK) ? WHITE : BLACK;
+    dfsGen++;
+    var mark = dfsGen;
+    var stackR = [r], stackC = [c], top = 1, n = 0;
+    dfsSeen[boardIndex(r, c)] = mark;
+    while (top > 0 && n <= 14) {
+        top--;
+        var cr = stackR[top], cc = stackC[top];
+        n++;
+        for (var e = 0; e < 4; e++) {
+            var nr = cr + dr[e], nc = cc + dc[e];
+            var nidx2 = boardIndex(nr, nc);
+            if (nidx2 < 0)
+                return false;
+            if (b[nidx2] === opp)
+                return false;
+            if (b[nidx2] !== EMPTY || dfsSeen[nidx2] === mark)
+                continue;
+            dfsSeen[nidx2] = mark;
+            stackR[top] = nr;
+            stackC[top] = nc;
+            top++;
+        }
+    }
+    return n <= 14;
+}
+
+// Eye-making value of the candidate (r,c) for `player` on pre-move (b):
+// 2 = divides interior into 2+ eye-spaces (play it!), 1 = solidifies
+// (attached with 3+ own neighbors, or a point inside an enclosure that
+// leaves one interior space with liberties), 0 = not eye related.
+// Finished-eye fills return 0 (vetoed elsewhere).
+function eyeMakeScore(b, koB, koActive, player, r, c) {
+    if (!eyeCandidate(b, player, r, c) || fillsOwnEye(b, r, c, player))
+        return 0;
+    var dr = [-1, 1, 0, 0], dc = [0, 0, -1, 1], own = 0;
+    for (var d = 0; d < 4; d++) {
+        var nidx = boardIndex(r + dr[d], c + dc[d]);
+        if (nidx >= 0 && b[nidx] === player)
+            own++;
+    }
+    copyBoard(probeBoard, b);
+    copyBoard(probeKo, koB);
+    var res = simTryPlace(probeBoard, probeKo, koActive, player, r, c);
+    if (!res.success)
+        return 0;
+    if (countLibertiesCapped(probeBoard, r, c, player, 2) < 2)
+        return 0;
+    var regions = eyeInteriorRegions(probeBoard, r, c, player);
+    if (regions >= 2)
+        return 2;
+    if (own >= 3 || regions === 1)
+        return 1;
+    return 0;
+}
+
+// Global eye scan for expansion/root only (never in playout steps):
+// returns the moves-index of an eye-dividing point (score 2), or -1.
+// Prefilter is O(1) per point; simulations capped at 6.
+function findEyeMove(b, koB, koActive, player, moves) {
+    var checks = 0;
+    for (var r = 0; r < BOARD_SIZE; r++) {
+        for (var c = 0; c < BOARD_SIZE; c++) {
+            var idx = boardIndex(r, c);
+            if (b[idx] !== EMPTY)
+                continue;
+            var m = findMoveIndex(moves, r, c);
+            if (m < 0)
+                continue;
+            if (!eyeCandidate(b, player, r, c) || fillsOwnEye(b, r, c, player))
+                continue;
+            if (checks >= 6)
+                continue;
+            checks++;
+            if (eyeMakeScore(b, koB, koActive, player, r, c) >= 2)
+                return m;
+        }
+    }
+    return -1;
+}
+
+// ---- tree breadth pruning (item E) ----
+// Keep pass + stones within distance 2 of any stone + star points; below
+// 6 stones on the board (opening) or fewer than 12 kept stones, return the
+// list unpruned so tenuki and book exits keep full breadth.
+var PRUNE_STARS = [[2, 2], [2, 6], [6, 2], [6, 6], [4, 4], [3, 3], [3, 5],
+                   [5, 3], [5, 5], [2, 4], [4, 2], [4, 6], [6, 4]];
+
+function pruneTreeMoves(moves, b) {
+    var stones = 0, i;
+    for (i = 0; i < 81; i++) {
+        if (b[i] !== EMPTY)
+            stones++;
+    }
+    if (stones < 6)
+        return moves;
+    var keep = [];
+    var keptStones = 0;
+    for (i = 0; i < moves.length; i++) {
+        var mr = moves[i].r, mc = moves[i].c;
+        if (mr === MCTS_PASS_ROW) {
+            keep[i] = true;
+            continue;
+        }
+        var near = false;
+        for (var dr = -2; dr <= 2 && !near; dr++) {
+            for (var dc = -2; dc <= 2 && !near; dc++) {
+                if (Math.abs(dr) + Math.abs(dc) > 3)
+                    continue;
+                var nidx = boardIndex(mr + dr, mc + dc);
+                if (nidx >= 0 && b[nidx] !== EMPTY)
+                    near = true;
+            }
+        }
+        if (!near) {
+            for (var s = 0; s < PRUNE_STARS.length; s++) {
+                if (PRUNE_STARS[s][0] === mr && PRUNE_STARS[s][1] === mc) {
+                    near = true;
+                    break;
+                }
+            }
+        }
+        keep[i] = near;
+        if (near)
+            keptStones++;
+    }
+    if (keptStones < 12)
+        return moves;
+    var out = [];
+    for (i = 0; i < moves.length; i++) {
+        if (keep[i])
+            out.push(moves[i]);
+    }
+    return out;
+}
+
 // Snapback guard for the forced-capture shortcut: simulate the kill, then
 // see if the opponent immediately recaptures at our sole liberty for at
 // least as many stones as we took. If so this is a throw-in trap, not a
@@ -673,7 +1098,7 @@ function isUnsafeCapture(b, koB, koActive, player, r, c) {
     var gained = before - after;
     if (gained <= 0)
         return true;
-    if (countLibertiesOn(probeBoard, r, c, player) > 1)
+    if (countLibertiesCapped(probeBoard, r, c, player, 2) > 1)
         return false;
     var lib = findLiberty(probeBoard, r, c);
     if (lib.r < 0)
@@ -703,7 +1128,7 @@ function findAtariKill(b, player, moves) {
     for (var r = 0; r < BOARD_SIZE; r++) {
         for (var c = 0; c < BOARD_SIZE; c++) {
             var idx = boardIndex(r, c);
-            if (b[idx] === opp && countLibertiesOn(b, r, c, opp) === 1) {
+            if (b[idx] === opp && countLibertiesCapped(b, r, c, opp, 2) === 1) {
                 var lib = findLiberty(b, r, c);
                 if (lib.r >= 0) {
                     var m = findMoveIndex(moves, lib.r, lib.c);
@@ -719,41 +1144,64 @@ function findAtariKill(b, player, moves) {
 // Tiered tactical move choice shared by expansion and playouts.
 // Tiers: (1) kill a 1-lib enemy group, (2) escape our 1-lib group,
 // (3) local 2-lib attack/defense around the last move (gated by probability
-// for speed). Returns the index into `moves`, or -1.
-function findTacticalMove(b, koB, koActive, player, moves, lastR, lastC) {
+// for speed). Returns the index into `moves`, or -1. When `info` is given,
+// info.tier receives the winning tier (1/2/3) so expansion can rank the
+// eye tier (item A) between urgent 1-lib tactics and Tier 3.
+function findTacticalMove(b, koB, koActive, player, moves, lastR, lastC, info) {
     var opp = (player === BLACK) ? WHITE : BLACK;
     var r, c, m;
+    // Tiers 1+2 in ONE board pass: first 1-lib enemy liberty (kill) and
+    // first safe 1-lib own escape, row-major order. Kill wins. This replaces
+    // two full-board flood sweeps per step (the common no-atari case did
+    // ~160 full group floods); capped counts + group memo make it one cheap
+    // pass with identical verdicts.
+    var killM = -1, escM = -1;
+    for (r = 0; r < BOARD_SIZE && (killM < 0 || escM < 0); r++) {
+        for (c = 0; c < BOARD_SIZE && (killM < 0 || escM < 0); c++) {
+            var idx = boardIndex(r, c);
+            var stone = b[idx];
+            if (stone === EMPTY)
+                continue;
+            if (countLibertiesCapped(b, r, c, stone, 2) !== 1)
+                continue;
+            var lib = findLiberty(b, r, c);
+            if (lib.r < 0)
+                continue;
+            var mi = findMoveIndex(moves, lib.r, lib.c);
+            if (mi < 0)
+                continue;
+            if (stone === opp && killM < 0) {
+                killM = mi;
+            } else if (stone === player && escM < 0 &&
+                       !putsSelfInAtari(b, koB, koActive, player,
+                                        moves[mi].r, moves[mi].c)) {
+                escM = mi;
+            }
+        }
+    }
     // Tier 1: immediate atari kill, but never a suicide throw-in: the
     // killing point itself must not end in atari (snapback/eye-steal).
     // Capturing kills that live on are still returned.
-    m = findAtariKill(b, player, moves);
-    if (m >= 0) {
+    if (killM >= 0) {
         copyBoard(probeBoard, b);
         copyBoard(probeKo, koB);
         var ktest = simTryPlace(probeBoard, probeKo, koActive, player,
-                                moves[m].r, moves[m].c);
+                                moves[killM].r, moves[killM].c);
         if (ktest.success &&
-            countLibertiesOn(probeBoard, moves[m].r, moves[m].c, player) > 1)
-            return m;
-        // Suspicious kill (ends in atari): fall through to Tier 2/3 and
-        // the scored fallback instead of forcing it.
-    }
-    // Tier 2: escape our 1-lib group, skipping escapes that stay in
-    // atari without capturing (ladder-following, snapback-feeding).
-    for (r = 0; r < BOARD_SIZE; r++) {
-        for (c = 0; c < BOARD_SIZE; c++) {
-            var idx = boardIndex(r, c);
-            if (b[idx] === player && countLibertiesOn(b, r, c, player) === 1) {
-                var lib = findLiberty(b, r, c);
-                if (lib.r >= 0) {
-                    m = findMoveIndex(moves, lib.r, lib.c);
-                    if (m >= 0 &&
-                        !putsSelfInAtari(b, koB, koActive, player,
-                                         moves[m].r, moves[m].c))
-                        return m;
-                }
-            }
+            countLibertiesCapped(probeBoard, moves[killM].r, moves[killM].c,
+                                 player, 2) > 1) {
+            if (info)
+                info.tier = 1;
+            return killM;
         }
+        // Suspicious kill (ends in atari): fall through to the escape found
+        // above (if any), else Tier 3 and the scored fallback.
+    }
+    // Tier 2: escape our 1-lib group (found in the same pass).
+    if (escM >= 0) {
+        if (info)
+            info.tier = 2;
+        return escM;
     }
     // Tier 3: local 2-lib tactics around the last move (bounded window,
     // probabilistic for speed — Pachi-style).
@@ -769,7 +1217,7 @@ function findTacticalMove(b, koB, koActive, player, moves, lastR, lastC) {
                 var col = b[widx];
                 if (col !== player && col !== opp)
                     continue;
-                if (countLibertiesOn(b, wr, wc, col) !== 2)
+                if (countLibertiesCapped(b, wr, wc, col, 3) !== 2)
                     continue;
                 var nlib = groupLiberties(b, wr, wc, col, libs);
                 for (var li = 0; li < nlib; li++) {
@@ -795,19 +1243,25 @@ function findTacticalMove(b, koB, koActive, player, moves, lastR, lastC) {
                                 captured = false;
                                 var nr = libs[li].r + dr2[d];
                                 var nc = libs[li].c + dc2[d];
-                                if (countLibertiesOn(probeBoard, nr, nc, opp) === 1)
+                                if (countLibertiesCapped(probeBoard, nr, nc, opp, 2) === 1)
                                     inAtari = true;
                             }
                         }
-                        var ol = countLibertiesOn(probeBoard, libs[li].r,
-                                                  libs[li].c, player);
-                        if ((captured || inAtari) && ol >= 1)
+                        var ol = countLibertiesCapped(probeBoard, libs[li].r,
+                                                  libs[li].c, player, 2);
+                        if ((captured || inAtari) && ol >= 1) {
+                            if (info)
+                                info.tier = 3;
                             return m;
+                        }
                     } else {
                         // Defense: any liberty that doesn't self-atari.
                         if (!putsSelfInAtari(b, koB, koActive, player,
-                                             libs[li].r, libs[li].c))
+                                             libs[li].r, libs[li].c)) {
+                            if (info)
+                                info.tier = 3;
                             return m;
+                        }
                     }
                 }
             }
@@ -821,9 +1275,14 @@ function findTacticalMove(b, koB, koActive, player, moves, lastR, lastC) {
 // when the board is nearly full, so playouts resolve instead of ending on
 // komi noise), and retry on failed placements. Applies the winning move to
 // (b, koB) and records it; returns the move index, or -1 for a pass turn.
+// Score buffers are module scratch (no per-call allocation in the hot loop;
+// no reentrancy: callees never reach here).
+var scoredScratch = [];
+var triedScratch = [];
+
 function chooseScoredMove(b, koB, koActiveObj, player, moves, lastR, lastC) {
     var n = moves.length;
-    var scores = [];
+    var scores = scoredScratch;
     var i, best = -99999;
     for (i = 0; i < n; i++) {
         var s;
@@ -854,6 +1313,7 @@ function chooseScoredMove(b, koB, koActiveObj, player, moves, lastR, lastC) {
     // Expensive tactical penalties for contenders only, applied
     // probabilistically (Pachi-style cost gate).
     var doPen = ((mctsRng() % 10) < TACT_PEN_PROB10);
+    var eyeChecks = 0, patChecks = 0;
     for (i = 0; i < n; i++) {
         if (moves[i].r === MCTS_PASS_ROW || scores[i] < best - 40)
             continue;
@@ -863,9 +1323,31 @@ function chooseScoredMove(b, koB, koActiveObj, player, moves, lastR, lastC) {
             scores[i] -= 100;
         else if (putsSelfInAtari(b, koB, koActiveObj.flag, player, moves[i].r, moves[i].c))
             scores[i] -= 60;
+        else if (eyeChecks < 4) {
+            // Item A: positive eye incentive (dividing point +40,
+            // solidify +15). Contender-only and capped so playouts stay fast.
+            eyeChecks++;
+            var es = eyeMakeScore(b, koB, koActiveObj.flag, player,
+                                  moves[i].r, moves[i].c);
+            if (es >= 2)
+                scores[i] += 40;
+            else if (es === 1)
+                scores[i] += 15;
+        }
+        // 3x3 patterns (Aya/MoGo): local shape only (near last move),
+        // contender-only and capped. Triangle hits penalize bad shape.
+        if (patChecks < 6 &&
+            Math.abs(moves[i].r - lastR) + Math.abs(moves[i].c - lastC) <= 2) {
+            patChecks++;
+            var pb = patBonus(b, moves[i].r, moves[i].c, player);
+            if (pb > 0)
+                scores[i] += pb * 25;
+            else if (pb < 0)
+                scores[i] += pb * 30;
+        }
     }
     // Try in score order until a placement succeeds (ko can still reject).
-    var tried = [];
+    var tried = triedScratch;
     for (i = 0; i < n; i++)
         tried[i] = false;
     for (var attempt = 0; attempt < 6; attempt++) {
@@ -1129,8 +1611,27 @@ function lifeRemoveDead(w, maxRounds) {
                 total++;
             }
         }
+        boardGen++;
     }
     return total;
+}
+
+// Benson alive-stone count for `color` on `b` (read-only): label once,
+// run Benson for the color, count alive cells. Single-color pass keeps
+// expansion-time cost to one labeling instead of two.
+function lifeAliveCount(b, color) {
+    var lab = {block: [], region: [], blockColor: [], nblocks: 0, nregions: 0};
+    lifeLabelAll(b, lab);
+    var alive = [];
+    for (var i = 0; i < 81; i++)
+        alive[i] = false;
+    lifeBensonForColor(b, lab, color, alive);
+    var n = 0;
+    for (var k = 0; k < 81; k++) {
+        if (alive[k])
+            n++;
+    }
+    return n;
 }
 
 // True when the candidate stone is dead on arrival under overlay semantics:
@@ -1147,7 +1648,10 @@ function lifeStoneDeadOnArrival(b, koB, koActive, player, r, c) {
     if (!res.success)
         return false;
     copyBoard(playBoard, probeBoard);
-    lifeRemoveDead(playBoard, 10);
+    // 6 rounds here (C uses 10): the watch re-verdicts every AI move with
+    // the full 10-round analysis as backstop, so the phone need only catch
+    // the clear cases fast.
+    lifeRemoveDead(playBoard, 6);
     return playBoard[idx] === EMPTY;
 }
 
@@ -1163,20 +1667,22 @@ function scoreBoardDeadAware(b) {
             var col = probeBoard[idx];
             if (col !== BLACK && col !== WHITE)
                 continue;
-            if (countLibertiesOn(probeBoard, r, c, col) <= 1)
+            if (countLibertiesCapped(probeBoard, r, c, col, 2) <= 1)
                 removeGroupOn(probeBoard, r, c, col);
         }
     }
     // Settled terminals: full overlay-equivalent dead removal so 2+-lib
     // dead invaders don't score. Gated on empties (open playout ends are
-    // noisy and the analysis costs) and capped at 4 rounds (C uses 10).
+    // noisy and the analysis costs) and capped at 2 rounds (C uses 10;
+    // the watch re-verdicts with 10 as backstop, and the cheap 1-lib strip
+    // above already catches the common case).
     var empties = 0, e;
     for (e = 0; e < 81; e++) {
         if (probeBoard[e] === EMPTY)
             empties++;
     }
-    if (empties <= 40)
-        lifeRemoveDead(probeBoard, 4);
+    if (empties <= 32)
+        lifeRemoveDead(probeBoard, 2);
     return scoreBoard(probeBoard);
 }
 
@@ -1247,7 +1753,13 @@ function mctsPlayout(initialPlayer) {
 }
 
 function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses) {
-    initPools();
+    // Empties first: gates AMAF reuse (item E), pass prior and Benson prior.
+    var empties0 = 0;
+    for (var e0 = 0; e0 < BOARD_SIZE * BOARD_SIZE; e0++) {
+        if (gBoard[e0] === EMPTY)
+            empties0++;
+    }
+    initPools(empties0 >= 81);
 
     rngState = (12345 + requestSeq * 7919) | 0;
     requestSeq++;
@@ -1272,6 +1784,9 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
     copyBoard(simKoBoard, gKoBoard);
     simKoActive = gKoActive;
     var openingMoves = getLegalMovesOn(simBoard, simKoBoard, simKoActive, currentPlayer);
+    // Item E: prune tree breadth to local stones + star points (playouts
+    // stay unpruned). Opening (<6 stones) keeps full breadth for tenuki.
+    openingMoves = pruneTreeMoves(openingMoves, simBoard);
     var root = nodePool[rootNode];
     for (var om = 0; om < openingMoves.length; om++) {
         var oc = allocNode(openingMoves[om].r, openingMoves[om].c, currentPlayer);
@@ -1287,12 +1802,54 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
         }
     }
 
+    // Benson alive prior (item C) + eye prior (item A): rank root children
+    // by post-move alive count for the mover, plus a bonus for eye-dividing
+    // points. Benson gated on empties (open boards have nothing alive) and
+    // capped at 40 children (each run is a full static analysis; the eye
+    // check below is one simulation and always runs for every child).
+    // Siblings share the pre-move position, so alive-after ordering equals
+    // alive-delta.
+    var bensonPriorOn = (empties <= 50);
+    var bensonRuns = 0;
+    {
+        var rc = root.firstChild;
+        while (rc !== MCTS_NO_NODE && rc < MCTS_POOL_SIZE) {
+            var rcn = nodePool[rc];
+            if (rcn.moveRow !== MCTS_PASS_ROW) {
+                copyBoard(probeBoard, gBoard);
+                copyBoard(probeKo, gKoBoard);
+                var rres = simTryPlace(probeBoard, probeKo, gKoActive,
+                                        currentPlayer, rcn.moveRow, rcn.moveCol);
+                if (rres.success) {
+                    if (bensonPriorOn && bensonRuns < 40) {
+                        bensonRuns++;
+                        rcn.prior = lifeAliveCount(probeBoard, currentPlayer);
+                    }
+                    var res_ = eyeMakeScore(gBoard, gKoBoard, gKoActive,
+                                            currentPlayer, rcn.moveRow,
+                                            rcn.moveCol);
+                    if (res_ >= 2)
+                        rcn.eye = 12;
+                    else if (res_ === 1)
+                        rcn.eye = 3;
+                    // 3x3 patterns: local shape only (near last move).
+                    if (Math.abs(rcn.moveRow - lastRow) +
+                        Math.abs(rcn.moveCol - lastCol) <= 2)
+                        rcn.pat = patBonus(gBoard, rcn.moveRow, rcn.moveCol,
+                                           currentPlayer);
+                }
+            }
+            rc = rcn.nextSibling;
+        }
+    }
+
     var startTime = Date.now();
     var iter = 0;
     for (iter = 0; iter < iterations; iter++) {
         // Time-boxed: stop early so the reply beats the watch-side timeout.
-        // Date.now() is checked every 16 iterations to keep overhead low.
-        if ((iter & 15) === 0 && iter > 0) {
+        // Checked every 8 iterations: single iterations got expensive (Benson
+        // priors, RAVE scans), so a 16-cadence could overshoot the budget.
+        if ((iter & 7) === 0 && iter > 0) {
             if (iter === 64) {
                 // Adaptive iteration count: measure this engine's speed and
                 // fit the search into 85% of the budget. Slow phone engines
@@ -1328,6 +1885,8 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
         simPasses = consecutivePasses;
 
         mctsPath[mctsPathLen] = nodeIdx;
+        mctsPathQ[mctsPathLen] = simPlayer;
+        mctsPathHist[mctsPathLen] = playHistN;
         mctsPathLen++;
 
         while (mctsPathLen < 200 && nodeIdx < MCTS_POOL_SIZE) {
@@ -1368,12 +1927,17 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
             simPlayer = (simPlayer === BLACK) ? WHITE : BLACK;
 
             mctsPath[mctsPathLen] = bestChild;
+            mctsPathQ[mctsPathLen] = simPlayer;
+            mctsPathHist[mctsPathLen] = playHistN;
             mctsPathLen++;
             nodeIdx = bestChild;
         }
 
         var leaf = nodePool[nodeIdx];
         var moves = getLegalMovesOn(simBoard, simKoBoard, simKoActive, simPlayer);
+        // Item E: prune expansion breadth to the fight zone (playouts and
+        // the root forced-capture check keep full breadth).
+        moves = pruneTreeMoves(moves, simBoard);
 
         var unexpandedIdx = -1;
 
@@ -1395,9 +1959,12 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
 
         // Shared tactical priority (atari kill/escape, local 2-lib fights)
         // overrides the first-unexpanded default when it names an untried move.
+        // Item A sits between: urgent 1-lib tactics (tiers 1-2) win, an
+        // eye-dividing point beats Tier 3 and the default.
+        var tactInfo = {};
         var tactIdx = findTacticalMove(simBoard, simKoBoard, simKoActive,
                                        simPlayer, moves, simLastRow,
-                                       simLastCol);
+                                       simLastCol, tactInfo);
         if (tactIdx >= 0) {
             var already = false;
             var ch = leaf.firstChild;
@@ -1412,6 +1979,25 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
             }
             if (!already)
                 unexpandedIdx = tactIdx;
+        }
+        if (!tactInfo.tier || tactInfo.tier >= 3) {
+            var eyeIdx = findEyeMove(simBoard, simKoBoard, simKoActive,
+                                     simPlayer, moves);
+            if (eyeIdx >= 0) {
+                var eyeAlready = false;
+                var ech = leaf.firstChild;
+                while (ech !== MCTS_NO_NODE && ech < MCTS_POOL_SIZE) {
+                    var ecn = nodePool[ech];
+                    if (ecn.moveRow === moves[eyeIdx].r &&
+                        ecn.moveCol === moves[eyeIdx].c) {
+                        eyeAlready = true;
+                        break;
+                    }
+                    ech = ecn.nextSibling;
+                }
+                if (!eyeAlready)
+                    unexpandedIdx = eyeIdx;
+            }
         }
 
         if (unexpandedIdx >= 0) {
@@ -1432,13 +2018,38 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
                 } else {
                     simPasses = 0;
                     var emover = simPlayer;
+                    // Item A eye check on the PRE-move board (eyeMakeScore
+                    // simulates internally; must run before simTryPlace).
+                    var ees = eyeMakeScore(simBoard, simKoBoard,
+                                           simKoActive, emover,
+                                           moves[unexpandedIdx].r,
+                                           moves[unexpandedIdx].c);
+                    // 3x3 pattern prior, same PRE-move board, near the
+                    // previous last move only (local shape language).
+                    var eps = 0;
+                    if (Math.abs(moves[unexpandedIdx].r - simLastRow) +
+                        Math.abs(moves[unexpandedIdx].c - simLastCol) <= 2)
+                        eps = patBonus(simBoard, moves[unexpandedIdx].r,
+                                       moves[unexpandedIdx].c, emover);
                     var result = simTryPlace(simBoard, simKoBoard, simKoActive,
                                              simPlayer, moves[unexpandedIdx].r,
                                              moves[unexpandedIdx].c);
                     simKoActive = result.koActive;
-                    if (result.success)
+                    if (result.success) {
                         recordHistMove(moves[unexpandedIdx].r,
                                        moves[unexpandedIdx].c, emover);
+                        // Benson gradient: cache post-move alive count for
+                        // the mover; uct() reads it as prior. Expansion-only
+                        // so the hot selection loop stays cheap.
+                        if (bensonPriorOn)
+                            nodePool[newChild].prior =
+                                lifeAliveCount(simBoard, emover);
+                        if (ees >= 2)
+                            nodePool[newChild].eye = 12;
+                        else if (ees === 1)
+                            nodePool[newChild].eye = 3;
+                        nodePool[newChild].pat = eps;
+                    }
                     simLastRow = moves[unexpandedIdx].r;
                     simLastCol = moves[unexpandedIdx].c;
                 }
@@ -1446,6 +2057,8 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
 
                 if (mctsPathLen < 199) {
                     mctsPath[mctsPathLen] = newChild;
+                    mctsPathQ[mctsPathLen] = simPlayer;
+                    mctsPathHist[mctsPathLen] = playHistN;
                     mctsPathLen++;
                     nodeIdx = newChild;
                 }
@@ -1455,13 +2068,42 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
         var resultVal = mctsPlayout(simPlayer);
         updateAmaf(resultVal);
 
+        var blackWon = (resultVal === 1);
+        // Precompute history keys once per backprop for the RAVE scan.
+        var histKey = [];
+        for (var hk = 0; hk < playHistN; hk++)
+            histKey[hk] = playHistR[hk] * 9 + playHistC[hk];
         for (var i = mctsPathLen - 1; i >= 0; i--) {
             var n = nodePool[mctsPath[i]];
             n.visits++;
-            if (n.player === BLACK && resultVal === 1) {
+            if (n.player === BLACK && blackWon) {
                 n.wins++;
-            } else if (n.player === WHITE && resultVal === 0) {
+            } else if (n.player === WHITE && !blackWon) {
                 n.wins++;
+            }
+            // Per-node RAVE (Aya-style): stone children played later by the
+            // side to move here share this outcome. History tail capped at
+            // 48 entries for phone speed.
+            var Q = mctsPathQ[i];
+            var qw = (Q === BLACK) === blackWon;
+            var tailFrom = mctsPathHist[i];
+            if (tailFrom < playHistN - 48)
+                tailFrom = playHistN - 48;
+            var chR = n.firstChild;
+            while (chR !== MCTS_NO_NODE && chR < MCTS_POOL_SIZE) {
+                var cnR = nodePool[chR];
+                if (cnR.moveRow !== MCTS_PASS_ROW) {
+                    var want = cnR.moveRow * 9 + cnR.moveCol;
+                    for (var hh = tailFrom; hh < playHistN; hh++) {
+                        if (playHistP[hh] === Q && histKey[hh] === want) {
+                            cnR.raveV++;
+                            if (qw)
+                                cnR.raveW++;
+                            break;
+                        }
+                    }
+                }
+                chR = cnR.nextSibling;
             }
         }
     }
@@ -1508,6 +2150,8 @@ function mctsGetBestMove() {
 }
 
 // Highest static-shape non-pass root child (deterministic fallback).
+// Eye-dividers outrank plain shape here (a starving engine should at
+// least save its groups); node.eye is already cached from the root loop.
 function bestPriorStone() {
     var root = nodePool[rootNode];
     var best = MCTS_NO_NODE;
@@ -1516,7 +2160,8 @@ function bestPriorStone() {
     while (child !== MCTS_NO_NODE && child < MCTS_POOL_SIZE) {
         var c = nodePool[child];
         if (c.moveRow !== MCTS_PASS_ROW) {
-            var s = shapeScore(c.moveRow, c.moveCol);
+            var s = shapeScore(c.moveRow, c.moveCol) + (c.eye || 0) * 500 +
+                (c.pat || 0) * 200;
             if (s > bestShape) {
                 bestShape = s;
                 best = child;
@@ -1607,6 +2252,77 @@ function openingBookMove(b, movesMade, player) {
         return null;
     return back;
 }
+// ---- pondering (think on the human's time) ----
+// After replying, the phone would idle for the human's whole think.
+// Instead run background playouts from the post-move position: no tree is
+// kept, but every playout feeds the persistent global AMAF, which the next
+// real search reads as its weak long-term memory. Sliced via setTimeout
+// so the event loop stays responsive; any new request aborts instantly.
+// Disabled under PEBBLE_NO_PONDER=1 (unit tests: keeps them hermetic).
+var PONDER_OFF = (typeof process !== 'undefined' && process.env &&
+                  process.env.PEBBLE_NO_PONDER === '1');
+var PONDER_MAX_SLICES = 12;
+var PONDER_PER_SLICE = 5;
+var ponderOn = false;
+var ponderSlices = 0;
+var ponderBoard = new Uint8Array(BOARD_SIZE * BOARD_SIZE);
+var ponderKo = new Uint8Array(BOARD_SIZE * BOARD_SIZE);
+var ponderKoActive = false;
+var ponderPlayer = EMPTY;
+
+function ponderSlice() {
+    if (!ponderOn)
+        return;
+    copyBoard(simBoard, ponderBoard);
+    copyBoard(simKoBoard, ponderKo);
+    simKoActive = ponderKoActive;
+    for (var k = 0; k < PONDER_PER_SLICE; k++) {
+        playHistN = 0;
+        var res = mctsPlayout(ponderPlayer);
+        updateAmaf(res);
+    }
+    ponderSlices++;
+    if (ponderSlices < PONDER_MAX_SLICES && ponderOn) {
+        try {
+            setTimeout(ponderSlice, 0);
+        } catch (e) {
+            ponderOn = false;
+        }
+    } else {
+        ponderOn = false;
+    }
+}
+
+// Snapshot the post-move position and start background pondering. Only for
+// real replies (stone/pass); error paths skip. Never throws: pondering is
+// best-effort and must not endanger the reply guarantee.
+function ponderStart(moveRow, moveCol, isPass, player) {
+    if (PONDER_OFF || typeof setTimeout !== 'function')
+        return;
+    try {
+        ponderOn = false;
+        copyBoard(simBoard, gBoard);
+        copyBoard(simKoBoard, gKoBoard);
+        simKoActive = gKoActive;
+        if (isPass === 0) {
+            var res = simTryPlace(simBoard, simKoBoard, simKoActive, player,
+                                  moveRow, moveCol);
+            if (!res.success)
+                return;
+            simKoActive = res.koActive;
+        }
+        copyBoard(ponderBoard, simBoard);
+        copyBoard(ponderKo, simKoBoard);
+        ponderKoActive = simKoActive;
+        ponderPlayer = (player === BLACK) ? WHITE : BLACK;
+        ponderSlices = 0;
+        ponderOn = true;
+        setTimeout(ponderSlice, 0);
+    } catch (e) {
+        ponderOn = false;
+    }
+}
+
 // Send a move reply back to the watch. This is the ONLY way the watch
 // leaves AI_THINKING (besides its own timeout), so every code path below
 // must end here — never throw without replying, or the game appears hung
@@ -1674,6 +2390,9 @@ Pebble.addEventListener('appmessage', function(e) {
 });
 
 function handleAiRequest(payload) {
+    // A new request aborts any background pondering instantly (single
+    // thread: this runs between ponder slices, so the check is race-free).
+    ponderOn = false;
     var type = payload ? payload[0] : undefined;
     console.log('pkjs: appmessage received, type=' + type);
     if (type !== 0) {
@@ -1714,6 +2433,7 @@ function handleAiRequest(payload) {
     if (bookMove) {
         console.log('pkjs: opening book plays (' + bookMove[0] + ',' + bookMove[1] + ')');
         sendMoveReply(bookMove[0], bookMove[1], 0);
+        ponderStart(bookMove[0], bookMove[1], 0, currentPlayer);
         return;
     }
 
@@ -1732,6 +2452,8 @@ function handleAiRequest(payload) {
                              rootMoves[killIdx].r, rootMoves[killIdx].c)) {
             console.log('pkjs: forced capture at (' + rootMoves[killIdx].r + ',' + rootMoves[killIdx].c + ')');
             sendMoveReply(rootMoves[killIdx].r, rootMoves[killIdx].c, 0);
+            ponderStart(rootMoves[killIdx].r, rootMoves[killIdx].c, 0,
+                        currentPlayer);
             return;
         } else {
             console.log('pkjs: atari kill looks unsafe (snapback?), searching instead');
@@ -1811,4 +2533,8 @@ function handleAiRequest(payload) {
     }
 
     sendMoveReply(moveRow, moveCol, isPass);
+    // Ponder the post-move position while the human thinks (best-effort,
+    // error replies excluded: nothing to ponder from).
+    if (isPass !== 2)
+        ponderStart(moveRow, moveCol, isPass, currentPlayer);
 }
