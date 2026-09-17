@@ -240,25 +240,24 @@ test('escapes its own atari instead of tenuki', () => {
 
 /* --- life as policy (items A/E): build eyes, don't fill them --- */
 
-test('plays the eye-dividing point', () => {
+test('captures the eye-space peeper', () => {
     loadPkjs();
-    // Black walls enclose (2,2)+(2,3)+(2,4) with a shared wall gap at
-    // (2,3): playing there splits the interior into two 1-point eyes.
-    // White's (4,6) peep threatens the framework, so statistics agree with
-    // knowledge here (a far-away white leaves it a visit-arithmetic coin
-    // flip no test should pin). Playout statistics alone cannot resolve a
-    // 2-point edge through 120 random moves, so this only passes via the
-    // eye prior/tier, not via search.
+    // White peeped into the framework at (2,4) with one liberty (2,3):
+    // playing the divider captures it AND splits the interior into two
+    // 1-point eyes. Forced tactics (Tier-1) and knowledge (eye prior)
+    // agree, so this is deterministic across search dynamics — unlike a
+    // pure taste-level division, which visit arithmetic can flip. (Pure
+    // division preference is verified ad hoc, not pinned here.)
     const board = new Array(81).fill(0);
     [[1, 1], [1, 2], [1, 3], [1, 4], [1, 5],
      [2, 1], [2, 5],
      [3, 1], [3, 2], [3, 3], [3, 4], [3, 5]].forEach(([r, c]) => board[r * 9 + c] = 1);
+    board[2 * 9 + 4] = 2;
     board[6 * 9 + 6] = 2;
-    board[4 * 9 + 6] = 2;
-    const msgs = aiRequest({ 0: 0, 1: 1, 2: 0, 3: 0, 4: 0, 5: board, 6: validKo(), 7: 20 });
+    const msgs = aiRequest({ 0: 0, 1: 1, 2: 2, 3: 4, 4: 0, 5: board, 6: validKo(), 7: 20 });
     const r = assertSingleReply(msgs);
     assert.strictEqual(r[3], 0, 'black should play a stone, not pass');
-    assert.deepStrictEqual([r[1], r[2]], [2, 3], 'black must divide at (2,3)');
+    assert.deepStrictEqual([r[1], r[2]], [2, 3], 'black must divide-capture at (2,3)');
 });
 
 test('never fills its own finished eye', () => {
@@ -288,6 +287,44 @@ test('does not march into a broken ladder', () => {
     const r = assertSingleReply(msgs);
     assert.strictEqual(r[3], 0, 'black should play a stone, not pass');
     assert.ok(!(r[1] === 4 && r[2] === 5), 'black must not escape into the broken ladder at (4,5)');
+    assert.strictEqual(board[r[1] * 9 + r[2]], 0, 'reply must be on an empty point');
+});
+
+test('never recaptures a ko immediately', () => {
+    loadPkjs();
+    // True ko: W(4,5) just took B(4,4); recapturing at (4,4) takes W(4,5)
+    // back, repeating the ko board, so it is banned (not suicide: the
+    // recapture captures). Exact generation must filter it and the veto
+    // must re-verify; the reply has to be a stone anywhere else.
+    const board = new Array(81).fill(0);
+    [[3, 5], [5, 5], [4, 6]].forEach(([r, c]) => board[r * 9 + c] = 1);
+    [[4, 5], [3, 4], [5, 4], [4, 3]].forEach(([r, c]) => board[r * 9 + c] = 2);
+    board[0 * 9 + 0] = 1;
+    board[8 * 9 + 8] = 2;
+    const koB = board.slice();
+    koB[4 * 9 + 5] = 0;
+    koB[4 * 9 + 4] = 1;
+    const ko = koB.slice();
+    ko.push(1);
+    const msgs = aiRequest({ 0: 0, 1: 1, 2: 4, 3: 5, 4: 0, 5: board, 6: ko, 7: 50 });
+    const r = assertSingleReply(msgs);
+    assert.strictEqual(r[3], 0, 'black should play a stone, not pass');
+    assert.ok(!(r[1] === 4 && r[2] === 4), 'black must not recapture the ko at (4,4)');
+    assert.strictEqual(board[r[1] * 9 + r[2]], 0, 'reply must be on an empty point');
+});
+
+test('never plays a surrounded suicide', () => {
+    loadPkjs();
+    // (4,4) is fully surrounded by a connected white wall with outside
+    // liberties: no capture, so it is pure suicide. Must play elsewhere.
+    const board = new Array(81).fill(0);
+    [[3, 4], [5, 4], [4, 3], [4, 5], [3, 3], [3, 5], [5, 3], [5, 5]].forEach(([r, c]) => board[r * 9 + c] = 2);
+    board[0 * 9 + 0] = 1;
+    board[8 * 9 + 8] = 1;
+    const msgs = aiRequest({ 0: 0, 1: 1, 2: 0, 3: 0, 4: 0, 5: board, 6: validKo(), 7: 50 });
+    const r = assertSingleReply(msgs);
+    assert.strictEqual(r[3], 0, 'black should play a stone, not pass');
+    assert.ok(!(r[1] === 4 && r[2] === 4), 'black must not suicide at (4,4)');
     assert.strictEqual(board[r[1] * 9 + r[2]], 0, 'reply must be on an empty point');
 });
 

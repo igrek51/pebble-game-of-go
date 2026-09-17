@@ -225,6 +225,10 @@ function allocNode(moveRow, moveCol, player) {
         // the time, so this outranks shape/pattern noise but not decisive
         // tactics or eye-division. Set at root + expansion.
         urg: 0,
+        // Atari threat: the move leaves an enemy group with one liberty
+        // (Fuego-style global threat bonus). Contact-gated, set at root +
+        // expansion. Kills need none of it (forced outright).
+        thr: 0,
         // Per-node RAVE (Aya-style): outcomes of playouts passing through
         // the PARENT where this move was played later by the side to move.
         raveV: 0,
@@ -433,6 +437,10 @@ function uct(childIdx, parentVisits) {
     // ladder march or a dead rescue.
     if (node.urg)
         value += 250;
+    // Atari threat: forceful moves that demand an answer outrank quiet
+    // tenuki. Below escape urgency (rescue first, threaten second).
+    if (node.thr)
+        value += 75;
 
     return value;
 }
@@ -637,9 +645,24 @@ function getLegalMovesOn(b, koB, koActive, player, fast) {
 
             // Fast mode (playouts only): occupied-check only; suicide/ko
             // fallout is filtered by the retry loop on the selected move.
-            // Exact mode (tree/root): full legality simulation.
+            // Exact mode (tree/root): legality simulation below, plus full
+            // ko verification when a ko is active (ko recaptures that also
+            // capture slip past the approximation — the match harness caught
+            // these as illegal replies in ko fights).
             if (fast) {
                 moves.push({r: row, c: col});
+                continue;
+            }
+
+            // Ko-active positions need exact verification: simulate on
+            // scratch (probe is free during move generation; tactics run
+            // after the list is built). Rare path (ko fights only).
+            if (koActive) {
+                copyBoard(probeBoard, b);
+                copyBoard(probeKo, koB);
+                if (simTryPlace(probeBoard, probeKo, koActive, player,
+                                row, col).success)
+                    moves.push({r: row, c: col});
                 continue;
             }
 
@@ -849,6 +872,37 @@ function putsSelfInAtari(b, koB, koActiveFlag, player, r, c) {
     if (after < before)
         return false;
     return countLibertiesCapped(probeBoard, r, c, player, 2) === 1;
+}
+
+// Stones in the `color` group containing (sr,sc), capped at `cap`
+// (early exit). Defenses of substantial groups are forced; 1-stone
+// sidesteps fall through to the scored fallback instead of marching.
+function groupSizeCapped(b, sr, sc, color, cap) {
+    dfsGen++;
+    var mark = dfsGen;
+    var startIdx = boardIndex(sr, sc);
+    if (startIdx < 0 || b[startIdx] !== color)
+        return 0;
+    var stackR = [sr], stackC = [sc], top = 1, n = 0;
+    dfsSeen[startIdx] = mark;
+    var dr = [-1, 1, 0, 0], dc = [0, 0, -1, 1];
+    while (top > 0) {
+        top--;
+        var r = stackR[top], c = stackC[top];
+        n++;
+        if (n >= cap)
+            return n;
+        for (var d = 0; d < 4; d++) {
+            var nidx = boardIndex(r + dr[d], c + dc[d]);
+            if (nidx < 0 || dfsSeen[nidx] === mark || b[nidx] !== color)
+                continue;
+            dfsSeen[nidx] = mark;
+            stackR[top] = r + dr[d];
+            stackC[top] = c + dc[d];
+            top++;
+        }
+    }
+    return n;
 }
 
 // Collect distinct empty liberties of the `color` group containing (sr,sc)
@@ -1277,6 +1331,150 @@ function isEscapeMove(b, player, r, c) {
     return hasAtariNeighbor(b, r, c, player);
 }
 
+// Distinct small enclosed eye-spaces containing or adjacent to (r,c),
+// capped at 3. Unlike eyeInteriorRegions (edge = open), the edge counts as
+// a WALL here: edge eyes are real eyes, and the veto below must see them.
+// A region counts when its bounded flood (cap 15) never touches an enemy
+// stone. Big/open/contested space counts 0. Works pre-move ((r,c) empty)
+// and post-move ((r,c) occupied) with the same semantics.
+function eyeSpacesTotal(b, r, c, player) {
+    var opp = (player === BLACK) ? WHITE : BLACK;
+    var dr = [-1, 1, 0, 0], dc = [0, 0, -1, 1];
+    dfsGen++;
+    var doneMark = dfsGen;
+    var total = 0;
+    var seeds = [[r, c]];
+    for (var d = 0; d < 4; d++) {
+        var ar = r + dr[d], ac = c + dc[d];
+        if (boardIndex(ar, ac) >= 0)
+            seeds.push([ar, ac]);
+    }
+    for (var s = 0; s < seeds.length; s++) {
+        var sr = seeds[s][0], sc = seeds[s][1];
+        var sidx = boardIndex(sr, sc);
+        if (sidx < 0 || b[sidx] !== EMPTY || dfsSeen[sidx] === doneMark)
+            continue;
+        dfsGen++;
+        var mark = dfsGen;
+        var stackR = [sr], stackC = [sc], top = 1, n = 0;
+        var contested = false;
+        dfsSeen[sidx] = mark;
+        while (top > 0 && n <= 15) {
+            top--;
+            var cr = stackR[top], cc = stackC[top];
+            n++;
+            for (var e = 0; e < 4; e++) {
+                var nr = cr + dr[e], nc = cc + dc[e];
+                var nidx = boardIndex(nr, nc);
+                if (nidx < 0)
+                    continue; // edge is a wall, not open space
+                if (b[nidx] === opp) {
+                    contested = true;
+                    continue;
+                }
+                if (b[nidx] !== EMPTY || dfsSeen[nidx] === mark)
+                    continue;
+                dfsSeen[nidx] = mark;
+                stackR[top] = nr;
+                stackC[top] = nc;
+                top++;
+                if (top >= 81)
+                    break;
+            }
+        }
+        // Mark the whole flooded area done (interior or not: connected
+        // space must not be recounted from another seed).
+        // NOTE: cells of an over-cap flood are only partially marked; the
+        // cap (15) plus done-marking keeps recounts bounded and verdicts
+        // conservative (big space never counts as an eye).
+        for (var m = 0; m < 81; m++) {
+            if (dfsSeen[m] === mark)
+                dfsSeen[m] = doneMark;
+        }
+        if (!contested && n <= 15) {
+            total++;
+            if (total >= 3)
+                return total;
+        }
+    }
+    return total;
+}
+
+// Eye-space verdict for candidate (r,c): 'kill' = the move reduces our eye
+// potential below 2 (fills the last eye, or 2 -> 1). Capturing moves are
+// exempt (eye-stealing kills are Tier-1's business). Dividers (1 -> 2),
+// solidifies (equal), and open-board points (0 -> 0) all pass.
+function eyeSpaceVerdict(b, koB, koActive, player, r, c) {
+    var opp = (player === BLACK) ? WHITE : BLACK;
+    if (hasAtariNeighbor(b, r, c, opp))
+        return 'ok'; // captures justify everything here
+    var pre = eyeSpacesTotal(b, r, c, player);
+    if (pre < 1)
+        return 'ok';
+    copyBoard(probeBoard, b);
+    copyBoard(probeKo, koB);
+    var res = simTryPlace(probeBoard, probeKo, koActive, player, r, c);
+    if (!res.success)
+        return 'ok'; // illegal is vetoed elsewhere
+    var post = eyeSpacesTotal(probeBoard, r, c, player);
+    if (post < pre && post < 2)
+        return 'kill';
+    return 'ok';
+}
+
+// True when (r,c) touches an enemy stone: only such points can threaten.
+// Contact gate for the threat scan below.
+function hasOppNeighbor(b, r, c, player) {
+    var opp = (player === BLACK) ? WHITE : BLACK;
+    var dr = [-1, 1, 0, 0], dc = [0, 0, -1, 1];
+    for (var d = 0; d < 4; d++) {
+        var nidx = boardIndex(r + dr[d], c + dc[d]);
+        if (nidx >= 0 && b[nidx] === opp)
+            return true;
+    }
+    return false;
+}
+
+// True when the move puts some enemy group in atari (exactly one liberty)
+// without capturing outright (kills are Tier-1's job, not mere threats).
+// Callers gate on hasOppNeighbor (contact only).
+function threatensAtari(b, koB, koActive, player, r, c) {
+    var opp = (player === BLACK) ? WHITE : BLACK;
+    copyBoard(probeBoard, b);
+    copyBoard(probeKo, koB);
+    var res = simTryPlace(probeBoard, probeKo, koActive, player, r, c);
+    if (!res.success)
+        return false;
+    var before = 0, after = 0, i;
+    for (i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
+        if (b[i] === opp)
+            before++;
+        if (probeBoard[i] === opp)
+            after++;
+    }
+    if (after < before)
+        return false; // outright kill, not a threat
+    for (var rr = 0; rr < BOARD_SIZE; rr++) {
+        for (var cc = 0; cc < BOARD_SIZE; cc++) {
+            if (probeBoard[rr * BOARD_SIZE + cc] === opp &&
+                countLibertiesCapped(probeBoard, rr, cc, opp, 2) === 1)
+                return true;
+        }
+    }
+    return false;
+}
+
+// Raw legality (suicide/ko/occupied) on scratch. The veto's last line of
+// defense: tree children can go stale mid-search as ko evolves, and exact
+// generation predates... everything is re-verified here before replying.
+function simLegal(b, koB, koActive, player, r, c) {
+    if (boardIndex(r, c) < 0 || b[r * BOARD_SIZE + c] !== EMPTY)
+        return false;
+    copyBoard(probeBoard, b);
+    copyBoard(probeKo, koB);
+    return simTryPlace(probeBoard, probeKo, koActive, player, r, c).success;
+}
+
 // Enemy density around (r,c): opponent stones within Chebyshev distance 2
 // (5x5 window minus center). High density + no tactics = walking into a
 // wall: the classic pocket-march the locality bonus otherwise rewards.
@@ -1361,6 +1559,10 @@ function findTacticalMove(b, koB, koActive, player, moves, lastR, lastC, info) {
             } else if (stone === player && escM < 0 &&
                        !putsSelfInAtari(b, koB, koActive, player,
                                         moves[mi].r, moves[mi].c) &&
+                       // No eye-filling rescues (capturing eye-steals pass
+                       // through: they take stones, Tier-1's business).
+                       (!fillsOwnEye(b, moves[mi].r, moves[mi].c, player) ||
+                        hasAtariNeighbor(b, moves[mi].r, moves[mi].c, opp)) &&
                        (!info || escapeVerdict(b, koB, koActive, player,
                                                moves[mi].r,
                                                moves[mi].c) === 'ok')) {
@@ -1449,17 +1651,18 @@ function findTacticalMove(b, koB, koActive, player, moves, lastR, lastC, info) {
                             return m;
                         }
                     } else {
-                        // Defense must improve or hold real ground, never
-                        // march into walls: accept 3+ libs anywhere (breaks
-                        // out), capturing defenses, and 2-lib sidesteps with
-                        // local friends (a fight, not a pocket: enemy
-                        // density within 2 of friendly density). Bare-wall
-                        // 2-lib sidesteps are refused — locality would
-                        // otherwise drag groups into pockets one step at a
-                        // time while reporting the framework move that
-                        // started it as near-certain. <2 libs without a
-                        // capture stays refused (old self-atari rule,
-                        // subsumed).
+                        // Defense of a 2-lib group: forced only when it
+                        // matters (breakouts, captures, supported dragons —
+                        // see below). Small-group sidesteps fall through to
+                        // the scored fallback, so playouts stop
+                        // force-marching 1-stone sacrifices into pockets.
+                        // Finished-eye fills are refused outright (captures
+                        // excepted, like rescues above).
+                        var dlr = libs[li].r, dlc = libs[li].c;
+                        var opp3 = (player === BLACK) ? WHITE : BLACK;
+                        if (fillsOwnEye(b, dlr, dlc, player) &&
+                            !hasAtariNeighbor(b, dlr, dlc, opp3))
+                            continue;
                         copyBoard(probeBoard, b);
                         copyBoard(probeKo, koB);
                         var ds = simTryPlace(probeBoard, probeKo, koActive,
@@ -1482,12 +1685,18 @@ function findTacticalMove(b, koB, koActive, player, moves, lastR, lastC, info) {
                                 if (ao < bo) {
                                     okDef = true; // capturing defense
                                 } else if (dd === 2 &&
+                                           groupSizeCapped(b, wr, wc, col, 4) >= 4 &&
                                            wallDensity(b, libs[li].r, libs[li].c,
                                                        player) <=
                                            2 + friendDensity(b, libs[li].r,
                                                              libs[li].c,
                                                              player)) {
-                                    okDef = true; // supported sidestep
+                                    // Supported sidestep of a substantial
+                                    // group (4+ stones): a fight, not a
+                                    // pocket. Small groups fall through to
+                                    // the scored fallback instead of
+                                    // force-marching sacrifices into walls.
+                                    okDef = true;
                                 }
                             }
                             if (okDef) {
@@ -2092,6 +2301,14 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
                                       rcn.moveCol) === 'ok') {
                         rcn.urg = 1;
                     }
+                    // Atari threat, contact-gated (open-board shape moves
+                    // never threaten).
+                    if (hasOppNeighbor(gBoard, rcn.moveRow, rcn.moveCol,
+                                       currentPlayer) &&
+                        threatensAtari(gBoard, gKoBoard, gKoActive,
+                                       currentPlayer, rcn.moveRow,
+                                       rcn.moveCol))
+                        rcn.thr = 1;
                 }
             }
             rc = rcn.nextSibling;
@@ -2165,20 +2382,32 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
             if (bestChild === MCTS_NO_NODE)
                 break;
 
+            // Apply the chosen child. A stale-illegal child (ko ban that
+            // materialized mid-descent as ko state evolved — rare, since
+            // move generation already filters ko) must NEVER flip the turn
+            // without moving: stop the descent here and play out from the
+            // current position instead. No bans are recorded (ko lifts),
+            // so future iterations re-evaluate the child normally.
             var bc = nodePool[bestChild];
+            var bcApplied = false;
             if (bc.moveRow === MCTS_PASS_ROW) {
                 simPasses++;
+                bcApplied = true;
             } else {
                 simPasses = 0;
                 var mover = simPlayer;
                 var result = simTryPlace(simBoard, simKoBoard, simKoActive,
                                          simPlayer, bc.moveRow, bc.moveCol);
                 simKoActive = result.koActive;
-                if (result.success)
+                if (result.success) {
                     recordHistMove(bc.moveRow, bc.moveCol, mover);
-                simLastRow = bc.moveRow;
-                simLastCol = bc.moveCol;
+                    bcApplied = true;
+                }
             }
+            if (!bcApplied)
+                break;
+            simLastRow = bc.moveRow;
+            simLastCol = bc.moveCol;
             simPlayer = (simPlayer === BLACK) ? WHITE : BLACK;
 
             mctsPath[mctsPathLen] = bestChild;
@@ -2256,7 +2485,38 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
         }
 
         if (unexpandedIdx >= 0) {
-            var newChild = allocNode(moves[unexpandedIdx].r, moves[unexpandedIdx].c, simPlayer);
+            // Verify BEFORE allocating: an illegal child (ko ban evolved
+            // mid-search) must never enter the tree. Pass verifies trivially.
+            var expRow = moves[unexpandedIdx].r, expCol = moves[unexpandedIdx].c;
+            var expMover = simPlayer;
+            // Priors need the PRE-move board: compute before simulating.
+            var ees = 0, eps = 0, eurg = 0, ethr = 0;
+            var expRes = null, expOk = (expRow === MCTS_PASS_ROW);
+            if (!expOk) {
+                ees = eyeMakeScore(simBoard, simKoBoard,
+                                   simKoActive, expMover, expRow, expCol);
+                // 3x3 pattern prior, same PRE-move board, near the
+                // previous last move only (local shape language).
+                if (Math.abs(expRow - simLastRow) +
+                    Math.abs(expCol - simLastCol) <= 2)
+                    eps = patBonus(simBoard, expRow, expCol, expMover);
+                // Escape urgency on the PRE-move board (verdict sims
+                // internally; must run before simTryPlace).
+                if (isEscapeMove(simBoard, expMover, expRow, expCol) &&
+                    escapeVerdict(simBoard, simKoBoard, simKoActive,
+                                  expMover, expRow, expCol) === 'ok')
+                    eurg = 1;
+                // Atari threat, contact-gated.
+                if (hasOppNeighbor(simBoard, expRow, expCol, expMover) &&
+                    threatensAtari(simBoard, simKoBoard, simKoActive,
+                                   expMover, expRow, expCol))
+                    ethr = 1;
+                expRes = simTryPlace(simBoard, simKoBoard, simKoActive,
+                                      simPlayer, expRow, expCol);
+                expOk = expRes.success;
+            }
+            var newChild = expOk ? allocNode(expRow, expCol, simPlayer)
+                                 : MCTS_NO_NODE;
             if (newChild !== MCTS_NO_NODE) {
                 if (leaf.firstChild === MCTS_NO_NODE) {
                     leaf.firstChild = newChild;
@@ -2268,54 +2528,27 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
                     nodePool[sib].nextSibling = newChild;
                 }
 
-                if (moves[unexpandedIdx].r === MCTS_PASS_ROW) {
+                if (expRow === MCTS_PASS_ROW) {
                     simPasses++;
                 } else {
                     simPasses = 0;
-                    var emover = simPlayer;
-                    var ees = eyeMakeScore(simBoard, simKoBoard,
-                                           simKoActive, emover,
-                                           moves[unexpandedIdx].r,
-                                           moves[unexpandedIdx].c);
-                    // 3x3 pattern prior, same PRE-move board, near the
-                    // previous last move only (local shape language).
-                    var eps = 0;
-                    if (Math.abs(moves[unexpandedIdx].r - simLastRow) +
-                        Math.abs(moves[unexpandedIdx].c - simLastCol) <= 2)
-                        eps = patBonus(simBoard, moves[unexpandedIdx].r,
-                                       moves[unexpandedIdx].c, emover);
-                    // Escape urgency on the PRE-move board (verdict sims
-                    // internally; must run before simTryPlace).
-                    var eurg = 0;
-                    if (isEscapeMove(simBoard, emover,
-                                     moves[unexpandedIdx].r,
-                                     moves[unexpandedIdx].c) &&
-                        escapeVerdict(simBoard, simKoBoard, simKoActive,
-                                      emover, moves[unexpandedIdx].r,
-                                      moves[unexpandedIdx].c) === 'ok')
-                        eurg = 1;
-                    var result = simTryPlace(simBoard, simKoBoard, simKoActive,
-                                             simPlayer, moves[unexpandedIdx].r,
-                                             moves[unexpandedIdx].c);
-                    simKoActive = result.koActive;
-                    if (result.success) {
-                        recordHistMove(moves[unexpandedIdx].r,
-                                       moves[unexpandedIdx].c, emover);
-                        // Benson gradient: cache post-move alive count for
-                        // the mover; uct() reads it as prior. Expansion-only
-                        // so the hot selection loop stays cheap.
-                        if (bensonPriorOn)
-                            nodePool[newChild].prior =
-                                lifeAliveCount(simBoard, emover);
-                        if (ees >= 2)
-                            nodePool[newChild].eye = 12;
-                        else if (ees === 1)
-                            nodePool[newChild].eye = 3;
-                        nodePool[newChild].pat = eps;
-                        nodePool[newChild].urg = eurg;
-                    }
-                    simLastRow = moves[unexpandedIdx].r;
-                    simLastCol = moves[unexpandedIdx].c;
+                    simKoActive = expRes.koActive;
+                    recordHistMove(expRow, expCol, expMover);
+                    // Benson gradient: cache post-move alive count for
+                    // the mover; uct() reads it as prior. Expansion-only
+                    // so the hot selection loop stays cheap.
+                    if (bensonPriorOn)
+                        nodePool[newChild].prior =
+                            lifeAliveCount(simBoard, expMover);
+                    if (ees >= 2)
+                        nodePool[newChild].eye = 12;
+                    else if (ees === 1)
+                        nodePool[newChild].eye = 3;
+                    nodePool[newChild].pat = eps;
+                    nodePool[newChild].urg = eurg;
+                    nodePool[newChild].thr = ethr;
+                    simLastRow = expRow;
+                    simLastCol = expCol;
                 }
                 simPlayer = (simPlayer === BLACK) ? WHITE : BLACK;
 
@@ -2424,7 +2657,7 @@ function bestPriorStone() {
         var c = nodePool[child];
         if (c.moveRow !== MCTS_PASS_ROW) {
             var s = shapeScore(c.moveRow, c.moveCol) + (c.eye || 0) * 500 +
-                (c.pat || 0) * 200 + (c.urg ? 1000 : 0);
+                (c.pat || 0) * 200 + (c.urg ? 1000 : 0) + (c.thr ? 400 : 0);
             if (s > bestShape) {
                 bestShape = s;
                 best = child;
@@ -2859,10 +3092,15 @@ function handleAiRequest(payload) {
     // NOTE: the checks use playBoard/probeBoard scratch: safe here because
     // the search is finished (no active playout).
     var vetoWhy = function(r, c) {
+        if (!simLegal(gBoard, gKoBoard, gKoActive, currentPlayer, r, c))
+            return 'illegal';
         if (putsSelfInAtari(gBoard, gKoBoard, gKoActive, currentPlayer, r, c))
             return 'self-atari';
         if (fillsOwnEye(gBoard, r, c, currentPlayer))
             return 'eye-fill';
+        if (eyeSpaceVerdict(gBoard, gKoBoard, gKoActive,
+                            currentPlayer, r, c) === 'kill')
+            return 'eye-kill';
         if (lifeStoneDeadOnArrival(gBoard, gKoBoard, gKoActive,
                                    currentPlayer, r, c))
             return 'dead-arrival';
