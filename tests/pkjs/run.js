@@ -328,6 +328,21 @@ test('never plays a surrounded suicide', () => {
     assert.strictEqual(board[r[1] * 9 + r[2]], 0, 'reply must be on an empty point');
 });
 
+test('connects split walls instead of tenuki', () => {
+    loadPkjs();
+    // Two black walls with a one-point gap at (4,3) and a white peep at
+    // (5,3): connecting defends the cut. Tenuki lets white through.
+    const board = new Array(81).fill(0);
+    [[4, 2], [4, 4], [3, 2], [3, 4], [5, 2], [5, 4]].forEach(([r, c]) => board[r * 9 + c] = 1);
+    board[5 * 9 + 3] = 2;
+    board[0 * 9 + 0] = 2;
+    board[8 * 9 + 8] = 2;
+    const msgs = aiRequest({ 0: 0, 1: 1, 2: 4, 3: 4, 4: 0, 5: board, 6: validKo(), 7: 20 });
+    const r = assertSingleReply(msgs);
+    assert.strictEqual(r[3], 0, 'black should play a stone, not pass');
+    assert.deepStrictEqual([r[1], r[2]], [4, 3], 'black must connect at (4,3)');
+});
+
 /* --- fuseki book (moves 2-9): pro shape instead of noise --- */
 
 test('fuseki takes the empty corner on move 3', () => {

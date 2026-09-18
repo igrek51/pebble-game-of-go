@@ -142,9 +142,8 @@ function mctsRng() {
 }
 
 function initPools(resetAmaf) {
-    nodePool = [];
-    nodePoolUsed = 0;
-    rootNode = MCTS_NO_NODE;
+    // NOTE: the node pool is NOT reset here (persistent tree, item 5):
+    // mctsRun resets it explicitly on the fresh path only.
     simBoard.fill(0);
     simKoBoard.fill(0);
     playBoard.fill(0);
@@ -229,6 +228,13 @@ function allocNode(moveRow, moveCol, player) {
         // (Fuego-style global threat bonus). Contact-gated, set at root +
         // expansion. Kills need none of it (forced outright).
         thr: 0,
+        // Connection: joins 2+ own groups (cut shapes die in pieces).
+        // Flat in uct() like patterns (+25). Set at root + expansion.
+        con: 0,
+        // Contested connection: joins groups next to enemy stones (someone
+        // wants to cut here) and lives. Rescue-class urgency below escapes:
+        // answer the cut before tenuki. Set at root + expansion.
+        cut: 0,
         // Per-node RAVE (Aya-style): outcomes of playouts passing through
         // the PARENT where this move was played later by the side to move.
         raveV: 0,
@@ -275,6 +281,10 @@ var PATTERNS_BASE = [
     { w: 1, g: [" X ", " . ", " O "] }, // contact peep
     { w: 1, g: ["X..", " . ", "..X"] }, // diagonal solidify
     { w: 1, g: [" X ", " . ", " X "] }, // bamboo joint
+    { w: 1, g: [" X ", "O.O", " X "] }, // cut-fill between own stones
+    { w: 1, g: [" O ", "X.X", " X "] }, // tiger-mouth close
+    { w: 1, g: ["X  ", " .X", "..."] }, // keima (knight) shape
+    { w: 1, g: ["  O", "X. ", "..."] }, // shoulder-hit attachment
     { w: -1, g: ["XX ", "X. ", "..."] } // EMPTY TRIANGLE (universally bad)
 ];
 
@@ -441,6 +451,12 @@ function uct(childIdx, parentVisits) {
     // tenuki. Below escape urgency (rescue first, threaten second).
     if (node.thr)
         value += 75;
+    // Connection: whole groups survive together.
+    if (node.con)
+        value += 25;
+    // Contested connection: defend the cut now, tenuki later.
+    if (node.cut)
+        value += 150;
 
     return value;
 }
@@ -1324,6 +1340,42 @@ function hasAtariNeighbor(b, r, c, color) {
     return false;
 }
 
+// Distinct own groups orthogonally adjacent to (r,c): 0 isolated, 1
+// extension, 2+ connection. Joining groups is the missing defensive
+// signal (cut shapes die in pieces); floods are tiny, no simulation.
+function connectCount(b, player, r, c) {
+    var dr = [-1, 1, 0, 0], dc = [0, 0, -1, 1];
+    dfsGen++;
+    var mark = dfsGen;
+    var groups = 0;
+    for (var d = 0; d < 4; d++) {
+        var nr = r + dr[d], nc = c + dc[d];
+        var nidx = boardIndex(nr, nc);
+        if (nidx < 0 || b[nidx] !== player || dfsSeen[nidx] === mark)
+            continue;
+        groups++;
+        if (groups >= 2)
+            return groups;
+        var stackR = [nr], stackC = [nc], top = 1;
+        dfsSeen[nidx] = mark;
+        while (top > 0) {
+            top--;
+            var cr = stackR[top], cc = stackC[top];
+            for (var e = 0; e < 4; e++) {
+                var mr = cr + dr[e], mc = cc + dc[e];
+                var midx = boardIndex(mr, mc);
+                if (midx < 0 || dfsSeen[midx] === mark || b[midx] !== player)
+                    continue;
+                dfsSeen[midx] = mark;
+                stackR[top] = mr;
+                stackC[top] = mc;
+                top++;
+            }
+        }
+    }
+    return groups;
+}
+
 // True when (r,c) escapes an own 1-lib group (Tier-2 shape): any orthogonal
 // own neighbor in atari. Used by the root veto to subject escapes to the
 // ladder/sacrifice verdict.
@@ -1800,6 +1852,10 @@ function chooseScoredMove(b, koB, koActiveObj, player, moves, lastR, lastC) {
             else if (pb < 0)
                 scores[i] += pb * 30;
         }
+        // Connection: joining 2+ own groups (+20). Extensions (1 group)
+        // already score via locality; isolation needs nothing.
+        if (connectCount(b, player, moves[i].r, moves[i].c) >= 2)
+            scores[i] += 20;
     }
     // Try in score order until a placement succeeds (ko can still reject).
     var tried = triedScratch;
@@ -2227,14 +2283,31 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
     }
     passPrior = (empties <= ENDGAME_EMPTIES) ? 0.5 : PASS_OPEN_PRIOR;
 
-    rootNode = allocNode(MCTS_PASS_ROW, MCTS_PASS_COL, EMPTY);
+    // Benson gate is position-dependent: compute for both paths (fresh and
+    // reused expansion use it below).
+    var bensonPriorOn = (empties <= 50);
 
-    // Expand ALL root children up front. Without this the selection loop
-    // only ever descends through the single first-expanded child, so the
-    // tree grows as one degenerate line and the reply is just the first
-    // shuffled move (usually an edge point) instead of a searched choice.
-    // With real siblings at the root, UCT + progressive shape bias actually
-    // compare all opening moves by visits.
+    // Persistent tree (item 5): continue the saved line when the new
+    // position matches saved reply + one opponent action. Otherwise reset
+    // the pool and expand fresh below.
+    var reuseRoot = tryReuseTree(currentPlayer);
+    if (reuseRoot === MCTS_NO_NODE) {
+        nodePool = [];
+        nodePoolUsed = 0;
+        rootNode = allocNode(MCTS_PASS_ROW, MCTS_PASS_COL, EMPTY);
+    } else {
+        rootNode = reuseRoot;
+        console.log('pkjs: tree reused, pool=' + nodePoolUsed);
+    }
+
+    // Expand ALL root children up front (fresh trees only; a reused tree
+    // already has its children with carried statistics). Without this the
+    // selection loop only ever descends through the single first-expanded
+    // child, so the tree grows as one degenerate line and the reply is just
+    // the first shuffled move (usually an edge point) instead of a searched
+    // choice. With real siblings at the root, UCT + progressive shape bias
+    // actually compare all opening moves by visits.
+    if (reuseRoot === MCTS_NO_NODE) {
     copyBoard(simBoard, gBoard);
     copyBoard(simKoBoard, gKoBoard);
     simKoActive = gKoActive;
@@ -2264,7 +2337,6 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
     // check below is one simulation and always runs for every child).
     // Siblings share the pre-move position, so alive-after ordering equals
     // alive-delta.
-    var bensonPriorOn = (empties <= 50);
     var bensonRuns = 0;
     {
         var rc = root.firstChild;
@@ -2309,11 +2381,25 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
                                        currentPlayer, rcn.moveRow,
                                        rcn.moveCol))
                         rcn.thr = 1;
+                    // Connection (cheap floods, no simulation: always).
+                    if (connectCount(gBoard, currentPlayer, rcn.moveRow,
+                                     rcn.moveCol) >= 2)
+                        rcn.con = 1;
+                    // Contested connection: joining next to enemy stones,
+                    // and the joint lives (else it is gluing corpses).
+                    if (rcn.con === 1 &&
+                        wallDensity(gBoard, rcn.moveRow, rcn.moveCol,
+                                    currentPlayer) >= 1 &&
+                        !lifeStoneDeadOnArrival(gBoard, gKoBoard, gKoActive,
+                                                currentPlayer, rcn.moveRow,
+                                                rcn.moveCol))
+                        rcn.cut = 1;
                 }
             }
             rc = rcn.nextSibling;
         }
     }
+    } // end fresh-only root expansion + priors
 
     var startTime = Date.now();
     var iter = 0;
@@ -2490,7 +2576,7 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
             var expRow = moves[unexpandedIdx].r, expCol = moves[unexpandedIdx].c;
             var expMover = simPlayer;
             // Priors need the PRE-move board: compute before simulating.
-            var ees = 0, eps = 0, eurg = 0, ethr = 0;
+            var ees = 0, eps = 0, eurg = 0, ethr = 0, ecn = 0, ecut = 0;
             var expRes = null, expOk = (expRow === MCTS_PASS_ROW);
             if (!expOk) {
                 ees = eyeMakeScore(simBoard, simKoBoard,
@@ -2511,6 +2597,13 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
                     threatensAtari(simBoard, simKoBoard, simKoActive,
                                    expMover, expRow, expCol))
                     ethr = 1;
+                if (connectCount(simBoard, expMover, expRow, expCol) >= 2) {
+                    ecn = 1;
+                    if (wallDensity(simBoard, expRow, expCol, expMover) >= 1 &&
+                        !lifeStoneDeadOnArrival(simBoard, simKoBoard, simKoActive,
+                                                expMover, expRow, expCol))
+                        ecut = 1;
+                }
                 expRes = simTryPlace(simBoard, simKoBoard, simKoActive,
                                       simPlayer, expRow, expCol);
                 expOk = expRes.success;
@@ -2547,6 +2640,8 @@ function mctsRun(iterations, currentPlayer, lastRow, lastCol, consecutivePasses)
                     nodePool[newChild].pat = eps;
                     nodePool[newChild].urg = eurg;
                     nodePool[newChild].thr = ethr;
+                    nodePool[newChild].con = ecn;
+                    nodePool[newChild].cut = ecut;
                     simLastRow = expRow;
                     simLastCol = expCol;
                 }
@@ -2648,6 +2743,8 @@ function mctsGetBestMove() {
 // Highest static-shape non-pass root child (deterministic fallback).
 // Eye-dividers outrank plain shape here (a starving engine should at
 // least save its groups); node.eye is already cached from the root loop.
+// Occupied points are skipped: on a reused tree, children can go stale as
+// stones land (the veto re-verifies legality on top of this).
 function bestPriorStone() {
     var root = nodePool[rootNode];
     var best = MCTS_NO_NODE;
@@ -2655,9 +2752,11 @@ function bestPriorStone() {
     var child = root.firstChild;
     while (child !== MCTS_NO_NODE && child < MCTS_POOL_SIZE) {
         var c = nodePool[child];
-        if (c.moveRow !== MCTS_PASS_ROW) {
+        if (c.moveRow !== MCTS_PASS_ROW &&
+            gBoard[c.moveRow * BOARD_SIZE + c.moveCol] === EMPTY) {
             var s = shapeScore(c.moveRow, c.moveCol) + (c.eye || 0) * 500 +
-                (c.pat || 0) * 200 + (c.urg ? 1000 : 0) + (c.thr ? 400 : 0);
+                (c.pat || 0) * 200 + (c.urg ? 1000 : 0) + (c.thr ? 400 : 0) +
+                (c.con ? 200 : 0) + (c.cut ? 800 : 0);
             if (s > bestShape) {
                 bestShape = s;
                 best = child;
@@ -2925,11 +3024,196 @@ function ponderStart(moveRow, moveCol, isPass, player) {
     }
 }
 
+// ---- persistent tree across moves (item 5) ----
+// The search tree (visits/wins/RAVE) survives between requests when the new
+// position continues the old line: our saved reply M applied to the saved
+// position must differ from the new position by exactly the opponent's
+// single action H (stone or pass). Anything else (new game, unexpected
+// board) falls back to a fresh tree. Pool pressure (>8000 nodes) also
+// forces fresh. Reused subtrees get visits/wins halved (like AMAF decay)
+// so old plans guide without starving new replies; position-dependent
+// priors (Benson/eye/pattern/urgency/threat/connection) are zeroed and
+// recomputed, since they belong to the old position.
+var savedValid = false;
+var savedRoot = MCTS_NO_NODE;
+var savedBoardBefore = [];
+var savedKoBefore = [];
+var savedKoActive = false;
+var savedReplyR = -1, savedReplyC = -1, savedReplyPass = false;
+var savedPlayer = EMPTY;
+var reqPlayer = EMPTY;
+
+function saveReplyState(moveRow, moveCol, isPass) {
+    if (isPass === 2) {
+        savedValid = false; // error: no move to continue from
+        return;
+    }
+    savedBoardBefore = gBoard.slice();
+    savedKoBefore = gKoBoard.slice();
+    savedKoActive = gKoActive;
+    savedReplyR = moveRow;
+    savedReplyC = moveCol;
+    savedReplyPass = (moveRow === MCTS_PASS_ROW && moveCol === MCTS_PASS_COL) || isPass === 1;
+    savedPlayer = reqPlayer;
+    savedRoot = rootNode;
+    savedValid = (rootNode !== MCTS_NO_NODE);
+}
+
+// Halve visits/wins/RAVE over the kept subtree (fresh exploration room)
+// and zero position-dependent priors (recomputed for the new position).
+// Iterative stack walk from newRoot; dead (unreachable) nodes are simply
+// abandoned (pool pressure triggers a full reset instead of GC).
+function decaySubtree(newRoot) {
+    var stack = [newRoot];
+    var seenMark = ++dfsGen;
+    // NOTE: reuses dfsSeen with its own generation; sequential use only,
+    // called between searches (no active floods).
+    dfsSeen[newRoot] = seenMark;
+    while (stack.length > 0) {
+        var idx = stack.pop();
+        var nd = nodePool[idx];
+        nd.visits = Math.floor(nd.visits / 2);
+        nd.wins = Math.floor(nd.wins / 2);
+        nd.raveV = Math.floor((nd.raveV || 0) / 2);
+        nd.raveW = Math.floor((nd.raveW || 0) / 2);
+        nd.prior = 0;
+        nd.eye = 0;
+        nd.pat = 0;
+        nd.urg = 0;
+        nd.thr = 0;
+        nd.con = 0;
+        var ch = nd.firstChild;
+        while (ch !== MCTS_NO_NODE && ch < MCTS_POOL_SIZE) {
+            if (dfsSeen[ch] !== seenMark) {
+                dfsSeen[ch] = seenMark;
+                stack.push(ch);
+            }
+            ch = nodePool[ch].nextSibling;
+        }
+    }
+}
+
+// Returns the reused root node, or MCTS_NO_NODE for a fresh tree.
+// Two rhythms share this matcher:
+//  single-color (engine = one side): our reply M, then their action H,
+//    then OUR turn again  -> root at H (our turn).
+//  both-colors (AI-vs-AI / match tool): our reply M, then THEIR turn on
+//    the unchanged board -> root at M (their turn).
+// Anything else (new game, mismatch, pool pressure) goes fresh.
+function tryReuseTree(currentPlayer) {
+    if (!savedValid || savedRoot === MCTS_NO_NODE || savedRoot >= nodePoolUsed)
+        return MCTS_NO_NODE;
+    if (savedPlayer !== BLACK && savedPlayer !== WHITE)
+        return MCTS_NO_NODE;
+    if (nodePoolUsed > 8000)
+        return MCTS_NO_NODE;
+    var oppSP = (savedPlayer === BLACK) ? WHITE : BLACK;
+    // Reconstruct P1 = saved position + our reply applied.
+    copyBoard(probeBoard, savedBoardBefore);
+    copyBoard(probeKo, savedKoBefore);
+    if (!savedReplyPass) {
+        var pr = simTryPlace(probeBoard, probeKo, savedKoActive, savedPlayer,
+                             savedReplyR, savedReplyC);
+        if (!pr.success)
+            return MCTS_NO_NODE;
+    }
+    // Diff P1 vs the new position: added stones must be the side that moved
+    // since our reply (oppSP); removals only our stones (their captures).
+    var hR = -1, hC = -1, hPass = true, bad = false, removed = 0;
+    for (var i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
+        if (probeBoard[i] === gBoard[i])
+            continue;
+        var r = Math.floor(i / BOARD_SIZE), c = i % BOARD_SIZE;
+        if (probeBoard[i] === EMPTY && gBoard[i] === oppSP) {
+            if (!hPass) {
+                bad = true;
+                break;
+            }
+            hPass = false;
+            hR = r;
+            hC = c;
+        } else if (probeBoard[i] === savedPlayer && gBoard[i] === EMPTY) {
+            removed++;
+            continue; // our stone captured by their move
+        } else {
+            bad = true;
+            break;
+        }
+    }
+    if (bad)
+        return MCTS_NO_NODE;
+    // Walk savedRoot -> M (our reply, by savedPlayer).
+    var mNode = MCTS_NO_NODE;
+    var ch = nodePool[savedRoot].firstChild;
+    while (ch !== MCTS_NO_NODE && ch < MCTS_POOL_SIZE) {
+        var cn = nodePool[ch];
+        var cmPass = (cn.moveRow === MCTS_PASS_ROW);
+        if (cmPass === savedReplyPass &&
+            (cmPass || (cn.moveRow === savedReplyR && cn.moveCol === savedReplyC)) &&
+            cn.player === savedPlayer) {
+            mNode = ch;
+            break;
+        }
+        ch = cn.nextSibling;
+    }
+    if (mNode === MCTS_NO_NODE)
+        return MCTS_NO_NODE;
+    if (hPass && removed === 0) {
+        // No action since our reply (P1 == current board).
+        if (currentPlayer === oppSP) {
+            // Both-colors rhythm: their turn on P1 -> root at M itself.
+            decaySubtree(mNode);
+            return mNode;
+        }
+        // Single-color rhythm: our turn again means they passed.
+        // Need the pass child (by the passer, oppSP) under M.
+        if (currentPlayer === savedPlayer) {
+            var hpNode = MCTS_NO_NODE;
+            var hch = nodePool[mNode].firstChild;
+            while (hch !== MCTS_NO_NODE && hch < MCTS_POOL_SIZE) {
+                var hcn = nodePool[hch];
+                if (hcn.moveRow === MCTS_PASS_ROW && hcn.player === oppSP) {
+                    hpNode = hch;
+                    break;
+                }
+                hch = hcn.nextSibling;
+            }
+            if (hpNode !== MCTS_NO_NODE) {
+                decaySubtree(hpNode);
+                return hpNode;
+            }
+        }
+        return MCTS_NO_NODE;
+    }
+    if (hPass)
+        return MCTS_NO_NODE; // our stone missing with no move: not a capture
+    // Their stone is on the board: single-color rhythm (our turn again).
+    if (currentPlayer !== savedPlayer)
+        return MCTS_NO_NODE;
+    var hNode = MCTS_NO_NODE;
+    var ch2 = nodePool[mNode].firstChild;
+    while (ch2 !== MCTS_NO_NODE && ch2 < MCTS_POOL_SIZE) {
+        var cn2 = nodePool[ch2];
+        if (cn2.moveRow === hR && cn2.moveCol === hC &&
+            cn2.player === oppSP) {
+            hNode = ch2;
+            break;
+        }
+        ch2 = cn2.nextSibling;
+    }
+    if (hNode === MCTS_NO_NODE)
+        return MCTS_NO_NODE;
+    decaySubtree(hNode);
+    return hNode;
+}
+
 // Send a move reply back to the watch. This is the ONLY way the watch
 // leaves AI_THINKING (besides its own timeout), so every code path below
 // must end here — never throw without replying, or the game appears hung
-// with dead buttons until the watch-side timeout fires.
+// with dead buttons until the watch-side timeout fires. Also snapshots
+// the reply for next move's tree reuse (item 5).
 function sendMoveReply(moveRow, moveCol, isPass) {
+    saveReplyState(moveRow, moveCol, isPass);
     console.log('pkjs: sending result back to watch...');
     try {
         Pebble.sendAppMessage({
@@ -3029,6 +3313,7 @@ function handleAiRequest(payload) {
         return;
     }
     console.log('pkjs: player=' + currentPlayer + ' last=(' + lastRow + ',' + lastCol + ') passes=' + consecutivePasses + ' moves=' + movesMade);
+    reqPlayer = currentPlayer;
 
     // Opening book first (moves 1-2): deterministic, no search needed.
     var bookMove = openingBookMove(gBoard, movesMade, currentPlayer);
@@ -3075,9 +3360,33 @@ function handleAiRequest(payload) {
         }
     }
 
-    console.log('pkjs: running MCTS with up to ' + MCTS_ITERATIONS + ' iterations...');
+    // Time management (item 4): static position complexity sets the
+    // iteration budget, not a flat count. Fights (tense stones with <=2
+    // liberties) and active ko get more search; nearly-full settled boards
+    // get less (cleanup needs no search). The 20s wall clock stays the hard
+    // guard either way, and the in-search adaptive cut still applies.
+    var planEmpties = 0, planTense = 0;
+    for (var pe = 0; pe < BOARD_SIZE * BOARD_SIZE; pe++) {
+        if (gBoard[pe] === EMPTY) {
+            planEmpties++;
+            continue;
+        }
+        var pr2 = Math.floor(pe / BOARD_SIZE), pc2 = pe % BOARD_SIZE;
+        if (countLibertiesCapped(gBoard, pr2, pc2, gBoard[pe], 3) <= 2)
+            planTense++;
+    }
+    var planIters = MCTS_ITERATIONS;
+    if (planEmpties <= 12)
+        planIters = 250;
+    else if (gKoActive)
+        planIters = 1400;
+    else if (planTense >= 6)
+        planIters = 1300;
+    if (planIters > 1500)
+        planIters = 1500;
+    console.log('pkjs: running MCTS with up to ' + planIters + ' iterations (empties=' + planEmpties + ' tense=' + planTense + ')...');
     var startTime = Date.now();
-    mctsRun(MCTS_ITERATIONS, currentPlayer, lastRow, lastCol, consecutivePasses);
+    mctsRun(planIters, currentPlayer, lastRow, lastCol, consecutivePasses);
     var elapsed = Date.now() - startTime;
     console.log('pkjs: MCTS finished in ' + elapsed + 'ms');
 
@@ -3158,6 +3467,87 @@ function handleAiRequest(payload) {
         }
     }
 
+// Reply widening for next move's tree reuse: pre-expand up to 5 likely
+// opponent replies under the chosen move, so the next request finds its H
+// node even for quiet (non-tactical) replies. Static scoring only (shape +
+// contact + locality, no simulation beyond exact legality which the move
+// generator already verified); zeroed priors, visits shape them next time.
+// Skipped on pool pressure, pass... no — pass replies widen too (opponent
+// moves after our pass reuse the same way).
+function widenReplies(bestNode) {
+    if (bestNode === MCTS_NO_NODE || bestNode >= nodePoolUsed)
+        return;
+    if (nodePoolUsed > 9500)
+        return;
+    var bn = nodePool[bestNode];
+    var mover = (bn.player === BLACK) ? WHITE : BLACK;
+    if (mover !== BLACK && mover !== WHITE)
+        return;
+    // Base = gBoard + our reply applied.
+    copyBoard(simBoard, gBoard);
+    copyBoard(simKoBoard, gKoBoard);
+    simKoActive = gKoActive;
+    if (bn.moveRow !== MCTS_PASS_ROW) {
+        var ap = simTryPlace(simBoard, simKoBoard, simKoActive, bn.player,
+                             bn.moveRow, bn.moveCol);
+        if (!ap.success)
+            return;
+        simKoActive = ap.koActive;
+    }
+    var moves = getLegalMovesOn(simBoard, simKoBoard, simKoActive, mover);
+    var scored = [];
+    for (var i = 0; i < moves.length; i++) {
+        if (moves[i].r === MCTS_PASS_ROW)
+            continue;
+        var s = shapeScore(moves[i].r, moves[i].c);
+        if (hasOppNeighbor(simBoard, moves[i].r, moves[i].c, mover))
+            s += 2000;
+        if (bn.moveRow !== MCTS_PASS_ROW &&
+            Math.abs(moves[i].r - bn.moveRow) +
+            Math.abs(moves[i].c - bn.moveCol) <= 2)
+            s += 1500;
+        scored.push({ i: i, s: s });
+    }
+    scored.sort(function(a, b) { return b.s - a.s; });
+    var added = 0;
+    var ensurePass = true;
+    var addChild = function(mr, mc) {
+        var ch = bn.firstChild;
+        while (ch !== MCTS_NO_NODE && ch < MCTS_POOL_SIZE) {
+            var cn = nodePool[ch];
+            if (cn.moveRow === mr && cn.moveCol === mc)
+                return false;
+            ch = cn.nextSibling;
+        }
+        var nc = allocNode(mr, mc, mover);
+        if (nc === MCTS_NO_NODE)
+            return false;
+        if (bn.firstChild === MCTS_NO_NODE) {
+            bn.firstChild = nc;
+        } else {
+            var sib = bn.firstChild;
+            while (nodePool[sib].nextSibling !== MCTS_NO_NODE)
+                sib = nodePool[sib].nextSibling;
+            nodePool[sib].nextSibling = nc;
+        }
+        return true;
+    };
+    // Opponent pass first: single-color pass-responses reuse through it.
+    if (addChild(MCTS_PASS_ROW, MCTS_PASS_COL))
+        added++;
+    for (var k = 0; k < scored.length && added < 6; k++) {
+        var mv = moves[scored[k].i];
+        if (addChild(mv.r, mv.c))
+            added++;
+    }
+    if (added > 0)
+        console.log('pkjs: widened ' + added + ' replies under best');
+}
+
+    // Widen likely opponent replies under the final move (next move's
+    // tree reuse). Skipped for error replies (nothing sound to continue).
+    if (isPass !== 2)
+        widenReplies(best);
     sendMoveReply(moveRow, moveCol, isPass);
     // Ponder the post-move position while the human thinks (best-effort,
     // error replies excluded: nothing to ponder from).
