@@ -180,7 +180,7 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
 
     // Last-move indicator: open ring in the opposite color on the most
     // recently placed stone (white ring on black, black ring on white).
-    // Triple-stroked (~3px) since graphics_draw_circle is 1px per pass.
+    // Double-stroked (~2px) since graphics_draw_circle is 1px per pass.
     // Skipped after a pass or on a fresh board (last_move_placed == false).
     if (last_move_placed) {
         uint8_t last_stone = get_stone(last_move_row, last_move_col);
@@ -189,8 +189,8 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
                               BOARD_ORIGIN_Y + last_move_row * CELL_SIZE);
             graphics_context_set_stroke_color(
                 ctx, (last_stone == BLACK) ? COLOR_WHITE_STONE
-                                           : COLOR_BLACK_STONE);
-            for (int r = 3; r <= 5; r++)
+                                       : COLOR_BLACK_STONE);
+            for (int r = 3; r <= 4; r++)
                 graphics_draw_circle(ctx, p, r);
         }
     }
