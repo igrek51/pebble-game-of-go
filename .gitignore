@@ -5,3 +5,18 @@ tests/test_board
 tests/test_match
 tests/test_fallback
 pebble_screenshot_*.png
+
+# eval vendor binaries + models (large, downloadable)
+tools/eval/vendor/*.zip
+tools/eval/vendor/*.gz
+tools/eval/vendor/katago/
+tools/eval/vendor/katago171/
+tools/eval/vendor/rung_*.cfg
+
+# phone/emulator logs
+*.log
+gtp_logs/
+
+# eval run artifacts (curated record lives in docs/eval.md)
+tools/eval/sgf/
+tools/eval/results.jsonl
