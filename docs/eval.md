@@ -68,10 +68,11 @@ https://katagotraining.org/extra_networks/.
 | 2026-09-22 | 1.2.0 | GNU Go level 3 | 0-2 | shutouts |
 | 2026-09-22 | 1.2.0 | GNU Go level 0 (weakest) | 0-2 | shutouts |
 | 2026-09-22 | 1.2.0 | self (adapter control) | 1-0, 1 void | W+18.5 in 124; void hit 300-move cap |
-| 2026-09-23 | 1.2.0+eval | GNU Go level 0 ×22 ladders | 0-44 | all shutouts; KataGo swing 264→67 best (typical ~90-150, noisy) |
+| 2026-09-23 | 1.2.0+eval | GNU Go level 0 ×24 ladders | 0-48 | all shutouts; KataGo swing 264→53 best (typical ~90-150, noisy) |
+| 2026-09-23 | 1.2.0+eval | tempo minimax (strategy top-3) | accepted | E6-over-F6 case fixed; 4-game mean 83 vs 105 baseline |
 | 2026-09-23 | 1.2.0+eval | captures metric | capFor 0-2 → 0-4, bigCaps 3-4 → 1-4 | fighting improved, still outgunned |
 
-**External total: 0-54 vs real opponents (22 GNU Go-0 ladders = 0-44, plus 0-10 vs GNU Go 10/3 and KataGo b6), 2-0 vs random.** Every loss is a
+**External total: 0-58 vs real opponents (24 GNU Go-0 ladders = 0-48, plus 0-10 vs GNU Go 10/3 and KataGo b6), 2-0 vs random.** Every loss is a
 full-board shutout (loser scores exactly 0: `W+88.5` / `B+73.5`).
 
 **Estimated level: below GNU Go's weakest setting and below zero-search
@@ -133,6 +134,11 @@ milestone**; the dumbest KataGo comes second.
 - REJECTED by swing protocol (reverted): strategy edge-band ban (116.5 vs
   105 baseline), fitted-delta batch nearLast+20/line2-8/proxUns1.5
   (150 vs 105, variance exploded). Ladder over fit/agreement.
+- Memo-hardening batch (liberty-memo board key, revert bumps, initPools and
+  payload bumps) REJECTED: 198 mean vs 105 (467pp outlier game). Either
+  harmful (slower search) or neutral; reverted. Komi 7→7.5 kept (correct).
+- Tempo minimax ACCEPTED (strategy top-3, opp-best-reply differential):
+  83 mean vs 105 baseline + best-ever 53pp game. Marginal but clear.
 - Strategy fit v2 (180 positions): 35.6% top-3 (was 17.5%). Implemented:
   ring table, line penalties, unsettled/settled proximity split,
   thickness-aware enemy cuts, locality + patterns in argmax. Reverted

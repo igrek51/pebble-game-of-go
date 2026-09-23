@@ -24,14 +24,17 @@ var plStatN = 0, plStatMoves = 0, plStatEmpty = 0, plStatCap = 0, plStatPass = 0
 // cut defense. Weights fitted in tools/eval/strat_fit.js (30% top-3).
 // stratGrid[i] ~ [-30, +50].
 var stratGrid = new Array(BOARD_SIZE * BOARD_SIZE);
+// Second grid for 1-ply tempo replies (opponent's best answer evaluation).
+var stratGrid2 = new Array(BOARD_SIZE * BOARD_SIZE);
 var STRAT_RING = [2, 20, 18, 6, -20];
-function stratCompute(b, player) {
+function stratCompute(b, player, out) {
+    out = out || stratGrid;
     var opp = (player === BLACK) ? WHITE : BLACK;
     for (var r = 0; r < BOARD_SIZE; r++) {
         for (var c = 0; c < BOARD_SIZE; c++) {
             var idx = r * BOARD_SIZE + c;
             if (b[idx] !== EMPTY) {
-                stratGrid[idx] = -999;
+                out[idx] = -999;
                 continue;
             }
             var dr0 = Math.abs(r - 4), dc0 = Math.abs(c - 4);
@@ -132,7 +135,7 @@ function stratCompute(b, player) {
                         s += 3.5;
                 }
             }
-            stratGrid[idx] = s;
+            out[idx] = s;
         }
     }
 }
@@ -1034,7 +1037,7 @@ function scoreBoard(b) {
     }
 
     var blackTotal = bStones + bTerritory;
-    var whiteTotal = wStones + wTerritory + 7;
+    var whiteTotal = wStones + wTerritory + 7.5;
     return blackTotal - whiteTotal;
 }
 
@@ -4320,17 +4323,49 @@ function handleAiRequest(payload) {
         // tested r29-30 and REJECTED — 150pp mean vs 105 baseline, variance
         // exploded (54 best but 210/213 worst). Ladder over fit.
         // Tree nodes carry eloc instead, with correct per-node context).
-        var sbi = -1, sbs = -99999;
+        // 1-ply tempo minimax over the top 3: don't leave a bigger reply
+        // (F6 lets White take E6: -20pp; E6 first keeps 47%). value(move)
+        // = grid(move) - oppBest(after), both raw grid scale.
+        var stop3 = [];
         for (var ssi = 0; ssi < 81; ssi++) {
             if (gBoard[ssi] === EMPTY) {
                 var ssr0 = Math.floor(ssi / BOARD_SIZE), ssc0 = ssi % BOARD_SIZE;
                 var sv = stratGrid[ssi];
                 sv += patBonus(gBoard, ssr0, ssc0, currentPlayer) * 10;
-                if (sv > sbs) {
-                    sbs = sv;
-                    sbi = ssi;
-                }
+                stop3.push({ i: ssi, s: sv });
             }
+        }
+        stop3.sort(function (a, b) { return b.s - a.s; });
+        var sbi = -1, sbs = -99999;
+        var oppP = (currentPlayer === BLACK) ? WHITE : BLACK;
+        for (var t3i = 0; t3i < stop3.length && t3i < 3; t3i++) {
+            var tr = Math.floor(stop3[t3i].i / BOARD_SIZE);
+            var tc = stop3[t3i].i % BOARD_SIZE;
+            copyBoard(probeBoard, gBoard);
+            copyBoard(probeKo, gKoBoard);
+            var tres = simTryPlace(probeBoard, probeKo, gKoActive,
+                                   currentPlayer, tr, tc);
+            var tv;
+            if (!tres.success) {
+                tv = -99999;
+            } else {
+                stratCompute(probeBoard, oppP, stratGrid2);
+                var ob = -99999;
+                for (var oi = 0; oi < 81; oi++) {
+                    if (probeBoard[oi] === EMPTY && stratGrid2[oi] > ob)
+                        ob = stratGrid2[oi];
+                }
+                tv = stop3[t3i].s - ob;
+            }
+            if (tv > sbs) {
+                sbs = tv;
+                sbi = stop3[t3i].i;
+            }
+        }
+        if (sbi >= 0 && sbs <= -99999 + 1) {
+            // All sims failed (shouldn't happen): fall back to plain argmax.
+            sbi = stop3.length ? stop3[0].i : -1;
+            sbs = stop3.length ? stop3[0].s : -99999;
         }
         if (sbi >= 0) {
             var ssr = Math.floor(sbi / BOARD_SIZE), ssc = sbi % BOARD_SIZE;
@@ -4341,7 +4376,7 @@ function handleAiRequest(payload) {
                 !fillsOwnEye(gBoard, ssr, ssc, currentPlayer) &&
                 eyeSpaceVerdict(gBoard, gKoBoard, gKoActive, currentPlayer, ssr, ssc) !== 'kill' &&
                 !lifeStoneDeadOnArrival(gBoard, gKoBoard, gKoActive, currentPlayer, ssr, ssc)) {
-                console.log('pkjs: quiet strategy plays (' + ssr + ',' + ssc + ') strat=' + sbs);
+                console.log('pkjs: quiet strategy plays (' + ssr + ',' + ssc + ') tempo=' + sbs);
                 sendMoveReply(ssr, ssc, 0);
                 ponderStart(ssr, ssc, 0, currentPlayer);
                 return;
