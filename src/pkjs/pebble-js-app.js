@@ -40,7 +40,7 @@ function stratCompute(b, player) {
             if (r === 0 || r === 8 || c === 0 || c === 8)
                 s -= 10; // first line: KataGo never plays it
             else if (r === 1 || r === 7 || c === 1 || c === 7)
-                s -= 6; // second line: playable, discount (fitted)
+                s -= 6; // second line: playable, discount (v3-fitted -8 rejected with the batch)
             // Cut defense: joining 2+ own groups next to enemy stones is
             // rescue-class (split walls die in pieces); quiet connections
             // are worth little (fit: 24 vs 2). Taking the ENEMY's
@@ -4219,7 +4219,13 @@ function handleAiRequest(payload) {
     // the best liberty-differential move (semeaiMove verifies legality by
     // simulation). Skips comfortably-ahead races. Tactical safety (no
     // self-atari/eye-fill); no dead-arrival veto (eyeless is the premise).
-    var sem = semeaiMove(gBoard, gKoBoard, gKoActive, currentPlayer);
+    // Mid-game only (movesMade >= 10): opening "races" are skirmishes
+    // best left to tactics/strategy (F6 misfire: -20pp on move 4).
+    // Ablation flag PEBBLE_NO_SEMEAI=1 (default off = enabled).
+    var noSemeai = (typeof process !== 'undefined' && process.env &&
+                    process.env.PEBBLE_NO_SEMEAI === '1');
+    var sem = (noSemeai || movesMade < 10) ? null :
+        semeaiMove(gBoard, gKoBoard, gKoActive, currentPlayer);
     if (sem) {
         if (simLegal(gBoard, gKoBoard, gKoActive, currentPlayer, sem[0], sem[1]) &&
             !putsSelfInAtari(gBoard, gKoBoard, gKoActive, currentPlayer, sem[0], sem[1]) &&
@@ -4310,18 +4316,15 @@ function handleAiRequest(payload) {
     }
     if (!preForced && !cutUrgent && movesMade < 50) {
         stratCompute(gBoard, currentPlayer);
-        // Argmax over grid + locality + shape patterns (fitted v2:
-        // nearLast helps but +60 over-chases to the edge (H7/J7); +40 it
-        // is (ladder-measured). Patterns +10.
-        // Locality/patterns are root-only here (tree nodes carry eloc/pat
-        // flags instead, with correct per-node context).
+        // Argmax over grid + shape patterns (NO locality: v3-fitted +20
+        // tested r29-30 and REJECTED — 150pp mean vs 105 baseline, variance
+        // exploded (54 best but 210/213 worst). Ladder over fit.
+        // Tree nodes carry eloc instead, with correct per-node context).
         var sbi = -1, sbs = -99999;
         for (var ssi = 0; ssi < 81; ssi++) {
             if (gBoard[ssi] === EMPTY) {
                 var ssr0 = Math.floor(ssi / BOARD_SIZE), ssc0 = ssi % BOARD_SIZE;
                 var sv = stratGrid[ssi];
-                if (Math.abs(ssr0 - lastRow) + Math.abs(ssc0 - lastCol) <= 2)
-                    sv += 40;
                 sv += patBonus(gBoard, ssr0, ssc0, currentPlayer) * 10;
                 if (sv > sbs) {
                     sbs = sv;

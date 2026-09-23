@@ -128,6 +128,11 @@ milestone**; the dumbest KataGo comes second.
 - Semeai v1 (capturing-race reader): eyeless contact detection (Benson),
   liberty-differential move choice, shared-lib penalty, ladder verdict on
   escapes. Fixed a suicide-march regression same-day. Fires in real races.
+  A/B vs disabled: ON 105pp mean vs OFF 142pp (4 games each) — KEEP.
+  Gated to movesMade>=10 (opening F6 misfire: -20pp on move 4).
+- REJECTED by swing protocol (reverted): strategy edge-band ban (116.5 vs
+  105 baseline), fitted-delta batch nearLast+20/line2-8/proxUns1.5
+  (150 vs 105, variance exploded). Ladder over fit/agreement.
 - Strategy fit v2 (180 positions): 35.6% top-3 (was 17.5%). Implemented:
   ring table, line penalties, unsettled/settled proximity split,
   thickness-aware enemy cuts, locality + patterns in argmax. Reverted

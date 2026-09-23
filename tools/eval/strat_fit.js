@@ -83,7 +83,7 @@ function features(b, turn, r, c, lastR, lastC) {
     const opp = turn === 1 ? 2 : 1;
     const f = {
         center: 8 - (Math.abs(r - 4) + Math.abs(c - 4)),
-        prox: 0, proxUns: 0, adj: 0, adjWeak: 0, conn: 0,
+        prox: 0, proxUns: 0, adj: 0, adjWeak: 0, adjSingle: 0, adjMulti: 0, adjRoom: 0, conn: 0,
         connCut: 0, connQuiet: 0,
         line1: (r === 0 || r === 8 || c === 0 || c === 8) ? 1 : 0,
         line2: (r === 1 || r === 7 || c === 1 || c === 7) ? 1 : 0,
@@ -91,6 +91,20 @@ function features(b, turn, r, c, lastR, lastC) {
         nearLast: Math.abs(r - lastR) + Math.abs(c - lastC) <= 2 ? 1 : 0,
         cutSize: 0, pat: 0,
     };
+    // Orthogonal contact profile (mover-agnostic counts for the fit).
+    {
+        let adjE = 0, room = 0;
+        const dr = [-1, 1, 0, 0], dc = [0, 0, -1, 1];
+        for (let d = 0; d < 4; d++) {
+            const nr = r + dr[d], nc = c + dc[d];
+            if (nr < 0 || nr > 8 || nc < 0 || nc > 8) continue;
+            if (b[nr * 9 + nc] === 0) room++;
+            else if (b[nr * 9 + nc] === opp) adjE++;
+        }
+        if (adjE === 1) f.adjSingle = 1;
+        if (adjE >= 2) f.adjMulti = 1;
+        f.adjRoom = room;
+    }
     for (let i = 0; i < 81; i++) {
         if (b[i] === 0) continue;
         const ir = Math.floor(i / 9), ic = i % 9;
@@ -160,6 +174,7 @@ function scorePoint(W, b, turn, r, c, lastR, lastC) {
     let s = (f.ring === 0 ? W.ring0 : f.ring === 1 ? W.ring1 : f.ring === 2 ? W.ring2 : f.ring === 3 ? W.ring3 : W.ring4)
         + f.proxUns * W.proxUns + (f.prox - f.proxUns) * W.proxSet
         + f.adjWeak * W.adjWeak + (f.adj - f.adjWeak) * W.adj
+        + f.adjSingle * W.adjSingle + f.adjMulti * W.adjMulti + f.adjRoom * W.adjRoom
         + f.connCut * W.connCut + f.connQuiet * W.connQuiet
         + f.cutSize * W.cutSize + f.pat * W.pat + f.nearLast * W.nearLast;
     if (!f.conn) s += 0; // (adj split above already)
@@ -269,10 +284,11 @@ function main() {
 
     // Baseline: current engine grid mapped onto v2 features.
     const base = {
-        ring0: 2, ring1: 16, ring2: 20, ring3: 8, ring4: -20,
-        proxUns: 3.5, proxSet: 3.5, adjWeak: -2, adj: -2,
-        connCut: 24, connQuiet: 2, cutSize: 0, pat: 0, nearLast: 0,
-        line1: -10, line2: -4,
+        ring0: 2, ring1: 20, ring2: 18, ring3: 6, ring4: -20,
+        proxUns: 2.5, proxSet: 3.5, adjWeak: -1, adj: -2.5,
+        adjSingle: 0, adjMulti: 0, adjRoom: 0,
+        connCut: 24, connQuiet: 2, cutSize: -1, pat: 10, nearLast: 0,
+        line1: -10, line2: -6,
     };
     const h1 = hitRate(base, positions, 1);
     const h3 = hitRate(base, positions, 3);
@@ -313,8 +329,8 @@ function main() {
 
     let W = { ...base };
     let best = hitRate(W, positions, 3).rate;
-    const keys = ['ring0', 'ring1', 'ring2', 'ring3', 'ring4', 'proxUns', 'proxSet', 'adjWeak', 'adj', 'connCut', 'connQuiet', 'cutSize', 'pat', 'nearLast', 'line1', 'line2'];
-    const steps = { ring0: 2, ring1: 2, ring2: 2, ring3: 2, ring4: 4, proxUns: 0.5, proxSet: 0.5, adjWeak: 0.5, adj: 0.5, connCut: 4, connQuiet: 2, cutSize: 1, pat: 5, nearLast: 20, line1: 3, line2: 2 };
+    const keys = ['ring0', 'ring1', 'ring2', 'ring3', 'ring4', 'proxUns', 'proxSet', 'adjWeak', 'adj', 'adjSingle', 'adjMulti', 'adjRoom', 'connCut', 'connQuiet', 'cutSize', 'pat', 'nearLast', 'line1', 'line2'];
+    const steps = { ring0: 2, ring1: 2, ring2: 2, ring3: 2, ring4: 4, proxUns: 0.5, proxSet: 0.5, adjWeak: 0.5, adj: 0.5, adjSingle: 2, adjMulti: 2, adjRoom: 1, connCut: 4, connQuiet: 2, cutSize: 1, pat: 5, nearLast: 20, line1: 3, line2: 2 };
     for (let round = 0; round < 6; round++) {
         let improved = false;
         for (const k of keys) {
