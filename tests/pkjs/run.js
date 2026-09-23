@@ -222,11 +222,11 @@ test('refuses early pass with an error, even on a full board', () => {
 
 test('escapes its own atari instead of tenuki', () => {
     loadPkjs();
-    // Mirror: Black stone (4,4) has one liberty left at (4,5); Black to
-    // move must escape there. Tenuki looks deceptively good in random
-    // playouts (the simulated opponent marches into walls instead of the
-    // open board), so this only passes via the escape-urgency prior plus
-    // honest playout defenses — never via raw statistics.
+    // Mirror: Black stone (4,4) has one liberty left at (4,5). KataGo says
+    // the position is 0% either way (lone surrounded stone), so this gates
+    // philosophy, not strength: tenuki to nowhere is banned; the engine
+    // may rescue (4,5) or double-squeeze (3,3) (both squeeze two white
+    // stones to 2 libs), but must contest the fight, not abandon it.
     const board = new Array(81).fill(0);
     board[4 * 9 + 4] = 1;
     board[3 * 9 + 4] = 2;
@@ -235,7 +235,10 @@ test('escapes its own atari instead of tenuki', () => {
     const msgs = aiRequest({ 0: 0, 1: 1, 2: 4, 3: 4, 4: 0, 5: board, 6: validKo(), 7: 10 });
     const r = assertSingleReply(msgs);
     assert.strictEqual(r[3], 0, 'black should play a stone, not pass');
-    assert.deepStrictEqual([r[1], r[2]], [4, 5], 'black must escape at (4,5)');
+    const ok = [[4, 5], [3, 3]];
+    assert.ok(ok.some(([er, ec]) => r[1] === er && r[2] === ec),
+        `black must contest (4,5) or (3,3), got (${r[1]},${r[2]})`);
+    assert.strictEqual(board[r[1] * 9 + r[2]], 0, 'reply must be on an empty point');
 });
 
 /* --- life as policy (items A/E): build eyes, don't fill them --- */
@@ -345,15 +348,21 @@ test('connects split walls instead of tenuki', () => {
 
 /* --- fuseki book (moves 2-9): pro shape instead of noise --- */
 
-test('fuseki takes the empty corner on move 3', () => {
+test('fuseki approaches instead of scattering on move 3', () => {
     loadPkjs();
-    // B(3,3), W(5,5): the emptiest quadrant star is (2,6).
+    // B(3,3), W(5,5): the old emptiest-quadrant scatter played (2,6),
+    // isolated 2nd-line while White builds. Strategy must approach White
+    // (KataGo top picks: F5/E4/F6/D4/G6 ≈ 40-45%; old scatter is off-list).
+    // Accept the approach family — exact point is search/weight noise.
     const board = new Array(81).fill(0);
     board[3 * 9 + 3] = 1;
     board[5 * 9 + 5] = 2;
     const msgs = aiRequest({ 0: 0, 1: 1, 2: 5, 3: 5, 4: 0, 5: board, 6: validKo(), 7: 2 });
     const r = assertSingleReply(msgs);
-    assert.deepStrictEqual([r[1], r[2], r[3]], [2, 6, 0]);
+    assert.strictEqual(r[3], 0, 'black should play a stone, not pass');
+    const ok = [[3, 5], [4, 5], [5, 6], [4, 4], [3, 4], [5, 4]];
+    assert.ok(ok.some(([er, ec]) => r[1] === er && r[2] === ec),
+        `black must approach White, got (${r[1]},${r[2]})`);
 });
 
 test('fuseki encloses an approached 4-4', () => {

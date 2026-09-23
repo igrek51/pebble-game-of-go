@@ -68,8 +68,10 @@ https://katagotraining.org/extra_networks/.
 | 2026-09-22 | 1.2.0 | GNU Go level 3 | 0-2 | shutouts |
 | 2026-09-22 | 1.2.0 | GNU Go level 0 (weakest) | 0-2 | shutouts |
 | 2026-09-22 | 1.2.0 | self (adapter control) | 1-0, 1 void | W+18.5 in 124; void hit 300-move cap |
+| 2026-09-23 | 1.2.0+eval | GNU Go level 0 ×22 ladders | 0-44 | all shutouts; KataGo swing 264→67 best (typical ~90-150, noisy) |
+| 2026-09-23 | 1.2.0+eval | captures metric | capFor 0-2 → 0-4, bigCaps 3-4 → 1-4 | fighting improved, still outgunned |
 
-**External total: 0-12 vs real opponents, 2-0 vs random.** Every loss is a
+**External total: 0-54 vs real opponents (22 GNU Go-0 ladders = 0-44, plus 0-10 vs GNU Go 10/3 and KataGo b6), 2-0 vs random.** Every loss is a
 full-board shutout (loser scores exactly 0: `W+88.5` / `B+73.5`).
 
 **Estimated level: below GNU Go's weakest setting and below zero-search
@@ -91,30 +93,72 @@ Dummy-off (same runner, 4 games): KataGo b6-v1 beats GNU Go-0 **4-0**
 So **GNU Go level 0 is the weakest real opponent and the correct first
 milestone**; the dumbest KataGo comes second.
 
-## Diagnosis (from 12 scored games + SGF replay)
+## Diagnosis (from 30+ scored games + SGF replay + KataGo analysis)
 
-- Capture asymmetry is ~50-to-0 against us in every game (e.g. game0 vs b6:
-  we lost 55 stones, took 0; vs GNU Go 10: lost 54-55, took 3-4). The engine
-  essentially never captures anything while losing every group it puts down.
+- Capture asymmetry was ~50-to-0 against us per game; now reduced but still
+  decisive. Every loss ends with all our stones captured (never close).
 - Self-play scores (W+4.5, W+8.5) are misleading: both sides share the same
   blindness, so games look sane. External games expose it.
-- Working hypothesis: the veto/danger stack (self-atari veto, snapback
-  guard, wall-density penalty, ladder-escape verdicts) suppresses nearly all
-  contact/capturing moves, while the search cannot read opponent threats —
-  so we feed stones into dead fights and never start a winning one. To be
-  verified by SGF review + atari-rate metrics (see next steps).
+- KataGo mistake attribution (`tools/eval/mistakes.js`): every game is
+  decided by 3-8 opening blunders of -15..-65pp in plies 0-25 (total swing
+  264pp at baseline → ~70-170pp now). Our moves cluster on low/side lines;
+  KataGo plays central big points. Mid-game we never convert even 89%
+  positions (r9g0) — survival fails independently of opening.
+- PROVEN by ablation: deep search (8k iters) scores WORSE (173pp) than
+  1.5k — more search on broken values = precisely wrong. Knowledge, not
+  speed, is the wall. Random playouts score far worse (284pp) — playout
+  tactics are net-positive, keep investing there.
+- Root values hit 85-90% in lost positions (delusional confidence from
+  Tromp-Taylor-counts-everything playouts vs weak simulated opposition).
 - Adapter control is clean (self-game W+18.5, no illegal moves anywhere),
   so the losses are genuine engine weakness, not harness artifacts.
 - Observation: one self-game never reached 2 passes in 300 moves — possible
   endgame pathology (both sides refusing to agree the game is over). Watch
   for recurrence; consider a move-cap adjudication rule in the runner.
 
-## Next steps
+## What changed in the engine (all gated by probes 9/9 + suite 30/30)
 
-1. Review `tools/eval/sgf/b6_v2/*.sgf` to confirm the failure mode.
-2. Add fight metrics to the runner (captures for/against, atari-play rate,
-   % of moves in contact) so regressions/improvements show numerically.
-3. Fix fighting; gate changes on beating the frozen baseline (this commit)
-   via self-play SPRT, then re-run this ladder.
-4. Climb: b6 higher visits → b10 rungs → kata9x9 specialist net
+- Pattern set 11 → 34 MoGo shapes (center-validated, no dead patterns).
+- Eye-divider forcing (life = urgent): fires ~1/game (groups rarely live
+  long enough for eye space — confirms the problem is earlier).
+- KataGo-distilled opening book (348 positions, 25KB, canonical-hash):
+  hit rate only ~2/game (GNU Go-0 deviates immediately; theoretical lines
+  don't cover its randomness). Anti-GNU-Go-0 book from its own lines
+  included — same result (its variety defeats precomputation).
+- Semeai v1 (capturing-race reader): eyeless contact detection (Benson),
+  liberty-differential move choice, shared-lib penalty, ladder verdict on
+  escapes. Fixed a suicide-march regression same-day. Fires in real races.
+- Strategy fit v2 (180 positions): 35.6% top-3 (was 17.5%). Implemented:
+  ring table, line penalties, unsettled/settled proximity split,
+  thickness-aware enemy cuts, locality + patterns in argmax. Reverted
+  locality 60 (edge-chasing) back to 40 — ladder over fit when they
+  disagree.
+- Edge-crawl gates: small breakouts + semeai skip lines 1-2 (C1/C2-class
+  donations); uniform forcing predicate (urgency + direction + liveness).
+
+- Tier-1/2/3/4 tactics forced at root when sound (was: lost in visit race).
+- Uniform forcing predicate (`forceDefenseOk`): urgency (small→3 libs,
+  big→2+), no first-line runs, no dead donations, peep-suppression.
+- Quiet-position strategy layer (`stratGrid`, KataGo-fitted ring/press/cut
+  weights, 30% top-3): big points instead of 2%-winrate search picks.
+- Cut answers forced (search misevaluates cuts); enemy-cut in tree/playouts.
+- Fight-following playouts (global tactics after quiet moves).
+- Focused tree breadth (tactical + cut + top-strategy, cap 18).
+- Removed: emptiest-quadrant fuseki scatter (played isolated 2nd-line
+  points, -27pp); forcing over-eager variants (documented in code).
+- Env-gated eval tools (default off, phone-safe): PEBBLE_PLAIN_SCORE,
+  PEBBLE_FULL_T3, PEBBLE_EVAL_ITERS, PEBBLE_RANDOM_PLAYOUT,
+  PEBBLE_PLAYOUT_STATS, PEBBLE_DUMP_ROOT.
+
+## Next steps (ordered)
+
+1. Playout pattern expansion (11 → ~40 MoGo shapes): biggest literature
+   lever for simulation quality (Pachi: -324..-502 Elo without patterns).
+2. Strategy fit v2: 200+ positions, group-liberty features (current 30%
+   top-3 ceiling comes from coarse features).
+3. Eye-making under pressure (survival when ahead — convert the 89%s).
+4. KataGo 9x9 book main lines for plies 0-10 (verified floor; needs
+   symmetry-aware import — multi-hour project, book is 1.4GB, per-node
+   pages fetchable via HTTP).
+5. Climb: b6 higher visits → b10 rungs → kata9x9 specialist net
    (`kata9x9-b18c384nbt-20231025`, download when needed) → CGOS bot.

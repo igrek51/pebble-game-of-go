@@ -20,3 +20,6 @@ gtp_logs/
 # eval run artifacts (curated record lives in docs/eval.md)
 tools/eval/sgf/
 tools/eval/results.jsonl
+
+# eval training data (regenerable via strat_data.js + KataGo; kept out of git)
+tools/eval/strat_train*.json
