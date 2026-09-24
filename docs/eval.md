@@ -72,7 +72,7 @@ https://katagotraining.org/extra_networks/.
 | 2026-09-23 | 1.2.0+eval | tempo minimax (strategy top-3) | accepted | E6-over-F6 case fixed; 4-game mean 83 vs 105 baseline |
 | 2026-09-23 | 1.2.0+eval | captures metric | capFor 0-2 → 0-4, bigCaps 3-4 → 1-4 | fighting improved, still outgunned |
 
-**External total: 0-58 vs real opponents (24 GNU Go-0 ladders = 0-48, plus 0-10 vs GNU Go 10/3 and KataGo b6), 2-0 vs random.** Every loss is a
+**External total: 0-62 vs real opponents (26 GNU Go-0 ladders = 0-52, plus 0-10 vs GNU Go 10/3 and KataGo b6), 2-0 vs random.** Every loss is a
 full-board shutout (loser scores exactly 0: `W+88.5` / `B+73.5`).
 
 **Estimated level: below GNU Go's weakest setting and below zero-search
@@ -139,6 +139,14 @@ milestone**; the dumbest KataGo comes second.
   harmful (slower search) or neutral; reverted. Komi 7→7.5 kept (correct).
 - Tempo minimax ACCEPTED (strategy top-3, opp-best-reply differential):
   83 mean vs 105 baseline + best-ever 53pp game. Marginal but clear.
+- Semeai A/B: ON 105 vs OFF 142 — KEEP (first solid module win). Gated to
+  movesMade>=10 (opening F6 misfire). March-guard + lost-abandon tried and
+  REMOVED (never fired usefully; the motivating march was close+engaged).
+- Aya best-match tiers (weaker+bigger first) measured NULL (99 vs 105):
+  disabled, code retained for experiments.
+- New failure mechanism found: proximity-feedback marches (each crawl
+  stone attracts the next via proximity bonus; r36g1: six stones, 467pp).
+  Unfixed — top candidate for next experiment (proximity cap).
 - Strategy fit v2 (180 positions): 35.6% top-3 (was 17.5%). Implemented:
   ring table, line penalties, unsettled/settled proximity split,
   thickness-aware enemy cuts, locality + patterns in argmax. Reverted

@@ -1921,7 +1921,7 @@ function doubleAttackExists(b, koB, koActive, player) {
 // standard tactical safety set, minus dead-arrival — eyeless is the
 // premise) and (later) tree priors. Uses probeBoard/playBoard scratch:
 // call only pre/post search.
-function semeaiMove(b, koB, koActive, player) {
+function semeaiMove(b, koB, koActive, player, lastR, lastC) {
     var opp = (player === BLACK) ? WHITE : BLACK;
     var lab = { block: [], region: [], blockColor: [] };
     for (var zi = 0; zi < 81; zi++) {
@@ -1982,6 +1982,10 @@ function semeaiMove(b, koB, koActive, player) {
             var diff = no - ne;
             if (diff > 1)
                 continue; // comfortably ahead: don't meddle here
+            // (March guard + lost-race abandon tried r39-40 and removed:
+            // the guard never fired on the motivating march (close and
+            // engaged), and abandoning needs reading, not thresholds.
+            // Only the movesMade>=10 gate stays (demonstrated F6 fix).)
             // Try every own liberty; maximize post-move differential.
             var preOpp = 0;
             for (var q = 0; q < 81; q++) {
@@ -2041,13 +2045,52 @@ function semeaiMove(b, koB, koActive, player) {
     return null;
 }
 
+// Tier-3 defense forcing flags for an okDef candidate (post-move libs dd
+// at (lr,lc), defending group (wr,wc,col)): sets out {cap,t3def,t3small}.
+// Shared by first-match and best-match paths (identical verdicts):
+// captures + substantial non-edge breakouts force (t3def); small ones are
+// damage control (t3small).
+function t3defFlags(b, probeBoard, opp, dd, wr, wc, col, lr, lc, out) {
+    var capDef = false;
+    if (dd >= 1) {
+        var bo2 = 0, ao2 = 0;
+        for (var bj = 0; bj < 81; bj++) {
+            if (b[bj] === opp)
+                bo2++;
+            if (probeBoard[bj] === opp)
+                ao2++;
+        }
+        capDef = ao2 < bo2;
+    }
+    out.cap = capDef;
+    out.t3def = false;
+    out.t3small = false;
+    if (capDef ||
+        (groupSizeCapped(b, wr, wc, col, 3) >= 3 &&
+         // No forced runs to the first line: edge liberties (D1/F1) fill
+         // next move, so the "clean" breakout is a donation (E1: -22pp).
+         lr !== 0 && lr !== 8 && lc !== 0 && lc !== 8))
+        out.t3def = true;
+    else
+        // Small-group breakout (1-2 stones): damage control, forced only
+        // with no double attack available (C4: 15% beats lone squeeze E3:
+        // 6%, but loses to a real peep D4: 45%).
+        out.t3small = true;
+    if (capDef)
+        out.cap = true;
+}
+
 // Tiered tactical move choice shared by expansion and playouts.
 // Tiers: (1) kill a 1-lib enemy group, (2) escape our 1-lib group,
 // (3) local 2-lib attack/defense around the last move (gated by probability
 // for speed). Returns the index into `moves`, or -1. When `info` is given,
 // info.tier receives the winning tier (1/2/3) so expansion can rank the
 // eye tier (item A) between urgent 1-lib tactics and Tier 3.
-function findTacticalMove(b, koB, koActive, player, moves, lastR, lastC, info, full) {
+// best (Aya-style): among same-tier candidates pick the biggest stakes
+// (most stones captured/saved) instead of row-major first-match.
+// Root-forcing only — playouts/expansion pass falsy and keep the fast
+// first-match path byte-identical.
+function findTacticalMove(b, koB, koActive, player, moves, lastR, lastC, info, full, best) {
     var opp = (player === BLACK) ? WHITE : BLACK;
     var r, c, m;
     // Tiers 1+2 in ONE board pass: first 1-lib enemy liberty (kill) and
@@ -2056,8 +2099,9 @@ function findTacticalMove(b, koB, koActive, player, moves, lastR, lastC, info, f
     // ~160 full group floods); capped counts + group memo make it one cheap
     // pass with identical verdicts.
     var killM = -1, escM = -1;
-    for (r = 0; r < BOARD_SIZE && (killM < 0 || escM < 0); r++) {
-        for (c = 0; c < BOARD_SIZE && (killM < 0 || escM < 0); c++) {
+    var killList = best ? [] : null, escList = best ? [] : null;
+    for (r = 0; r < BOARD_SIZE && (best || killM < 0 || escM < 0); r++) {
+        for (c = 0; c < BOARD_SIZE && (best || killM < 0 || escM < 0); c++) {
             var idx = boardIndex(r, c);
             var stone = b[idx];
             if (stone === EMPTY)
@@ -2070,16 +2114,19 @@ function findTacticalMove(b, koB, koActive, player, moves, lastR, lastC, info, f
             var mi = findMoveIndex(moves, lib.r, lib.c);
             if (mi < 0)
                 continue;
-            if (stone === opp && killM < 0) {
-                killM = mi;
-            } else if (stone === player && escM < 0 &&
+            if (stone === opp && (best || killM < 0)) {
+                if (best)
+                    killList.push({ mi: mi, size: groupSizeCapped(b, r, c, opp, 20) });
+                else
+                    killM = mi;
+            } else if (stone === player && (best || escM < 0) &&
                        !putsSelfInAtari(b, koB, koActive, player,
                                         moves[mi].r, moves[mi].c) &&
                        // No eye-filling rescues (capturing eye-steals pass
                        // through: they take stones, Tier-1's business).
                        (!fillsOwnEye(b, moves[mi].r, moves[mi].c, player) ||
                         hasAtariNeighbor(b, moves[mi].r, moves[mi].c, opp)) &&
-                       (!info || escapeVerdict(b, koB, koActive, player,
+                       (!info || best || escapeVerdict(b, koB, koActive, player,
                                                moves[mi].r,
                                                moves[mi].c) === 'ok')) {
                 // At expansion (info given), escapes face the ladder and
@@ -2087,7 +2134,36 @@ function findTacticalMove(b, koB, koActive, player, moves, lastR, lastC, info, f
                 // tenuki, never forced. In playouts (no info) keep the cheap
                 // escape — the chase resolves by capture there, correctly
                 // punishing ladder-following lines.
-                escM = mi;
+                if (best)
+                    escList.push({ mi: mi, size: groupSizeCapped(b, r, c, player, 12) });
+                else
+                    escM = mi;
+            }
+        }
+    }
+    if (best) {
+        // Biggest capture first (guard each: killer must live on).
+        killList.sort(function (a, b2) { return b2.size - a.size; });
+        for (var ki = 0; ki < killList.length; ki++) {
+            copyBoard(probeBoard, b);
+            copyBoard(probeKo, koB);
+            var kkt = simTryPlace(probeBoard, probeKo, koActive, player,
+                                  moves[killList[ki].mi].r, moves[killList[ki].mi].c);
+            if (kkt.success &&
+                countLibertiesCapped(probeBoard, moves[killList[ki].mi].r,
+                                     moves[killList[ki].mi].c, player, 2) > 1) {
+                killM = killList[ki].mi;
+                break;
+            }
+        }
+        // Biggest rescue first (verdict top-3 by size; verdicts are search).
+        escList.sort(function (a, b2) { return b2.size - a.size; });
+        for (var ei = 0; ei < escList.length && ei < 3; ei++) {
+            if (!info || escapeVerdict(b, koB, koActive, player,
+                                       moves[escList[ei].mi].r,
+                                       moves[escList[ei].mi].c) === 'ok') {
+                escM = escList[ei].mi;
+                break;
             }
         }
     }
@@ -2115,6 +2191,10 @@ function findTacticalMove(b, koB, koActive, player, moves, lastR, lastC, info, f
             info.tier = 2;
         return escM;
     }
+    // Best-match candidates (Aya: weaker+bigger first). Collected across
+    // Tier-3 then Tier-4 (tier priority preserved: Tier-3 winners beat any
+    // Tier-4). Root-forcing only (best=true); playouts/expansion skip.
+    var bestCands = best ? [] : null;
     // Tier 3: local 2-lib tactics around the last move (bounded window,
     // probabilistic for speed — Pachi-style).
     // Tier 3: local 2-lib tactics around the last move (bounded window for
@@ -2175,17 +2255,22 @@ function findTacticalMove(b, koB, koActive, player, moves, lastR, lastC, info, f
                         var ol = countLibertiesCapped(probeBoard, libs[li].r,
                                                   libs[li].c, player, 2);
                         if ((captured || inAtari) && ol >= 1) {
-                            if (info) {
-                                info.tier = 3;
-                                // Capturing attacks are root-forceable (stones
-                                // off the board); mere atari-makers are
-                                // prior-only (the cut/connection judgment
-                                // stays with the search — see the split-walls
-                                // unit test).
-                                if (captured)
-                                    info.cap = true;
+                            if (!best) {
+                                if (info) {
+                                    info.tier = 3;
+                                    // Capturing attacks are root-forceable (stones
+                                    // off the board); mere atari-makers are
+                                    // prior-only (the cut/connection judgment
+                                    // stays with the search — see the split-walls
+                                    // unit test).
+                                    if (captured)
+                                        info.cap = true;
+                                }
+                                return m;
                             }
-                            return m;
+                            var asz = groupSizeCapped(b, wr, wc, opp, 12);
+                            bestCands.push({ m: m, tier: 3, score: captured ? 1000 + asz : asz,
+                                             cap: captured, t3def: false, t3small: false, t4pres: false });
                         }
                     } else {
                         // Defense of a 2-lib group: forced only when it
@@ -2237,47 +2322,28 @@ function findTacticalMove(b, koB, koActive, player, moves, lastR, lastC, info, f
                                 }
                             }
                             if (okDef) {
-                                if (info) {
-                                    info.tier = 3;
-                                    // Sound defenses are root-forceable
-                                    // (capture, supported sidestep, breakout
-                                    // of a substantial group). Breakouts of
-                                    // 1-2 stone groups are prior-only: small
-                                    // stones are LIGHT — force-saving them
-                                    // commits to dead-end shape (C2: -32pp)
-                                    // while the opponent takes the center.
-                                    // KataGo abandons or peeps instead.
-                                    var capDef = false;
-                                    if (dd >= 1) {
-                                        var bo2 = 0, ao2 = 0;
-                                        for (var bj = 0; bj < 81; bj++) {
-                                            if (b[bj] === opp2)
-                                                bo2++;
-                                            if (probeBoard[bj] === opp2)
-                                                ao2++;
-                                        }
-                                        capDef = ao2 < bo2;
+                                if (!best) {
+                                    if (info) {
+                                        info.tier = 3;
+                                        // Sound defenses are root-forceable
+                                        // (capture, supported sidestep, breakout
+                                        // of a substantial group). Breakouts of
+                                        // 1-2 stone groups are prior-only: small
+                                        // stones are LIGHT — force-saving them
+                                        // commits to dead-end shape (C2: -32pp)
+                                        // while the opponent takes the center.
+                                        // KataGo abandons or peeps instead.
+                                        t3defFlags(b, probeBoard, opp2, dd, wr, wc, col, libs[li].r, libs[li].c, info);
                                     }
-                                    if (capDef ||
-                                        (groupSizeCapped(b, wr, wc, col, 3) >= 3 &&
-                                         // No forced runs to the first line:
-                                         // edge liberties (D1/F1) fill next
-                                         // move, so the "clean" breakout is
-                                         // a donation (E1: -22pp).
-                                         libs[li].r !== 0 && libs[li].r !== 8 &&
-                                         libs[li].c !== 0 && libs[li].c !== 8))
-                                        info.t3def = true;
-                                    else
-                                        // Small-group breakout (1-2 stones):
-                                        // damage control, forced only with
-                                        // no double attack available (C4:
-                                        // 15% beats lone squeeze E3: 6%, but
-                                        // loses to a real peep D4: 45%).
-                                        info.t3small = true;
-                                    if (capDef)
-                                        info.cap = true;
+                                    return m;
                                 }
-                                return m;
+                                // best (Aya): record, keep scanning, pick
+                                // biggest stakes after all loops.
+                                var FI3 = { tier: 3 };
+                                t3defFlags(b, probeBoard, opp2, dd, wr, wc, col, libs[li].r, libs[li].c, FI3);
+                                var dsz3 = groupSizeCapped(b, wr, wc, col, 12);
+                                bestCands.push({ m: m, tier: 3, score: FI3.cap ? 1000 + dsz3 : dsz3,
+                                                 cap: FI3.cap, t3def: FI3.t3def, t3small: FI3.t3small, t4pres: false });
                             }
                         }
                     }
@@ -2285,6 +2351,18 @@ function findTacticalMove(b, koB, koActive, player, moves, lastR, lastC, info, f
             }
         }
         } // end t3pass (window first, whole board after)
+    }
+    if (best && bestCands.length) {
+        // Tier-3 winner by stakes (Aya); Tier-4 skipped (tier priority).
+        bestCands.sort(function (a, b2) { return b2.score - a.score; });
+        var w3 = bestCands[0];
+        if (info) {
+            info.tier = 3;
+            if (w3.cap) info.cap = true;
+            if (w3.t3def) info.t3def = true;
+            if (w3.t3small) info.t3small = true;
+        }
+        return w3.m;
     }
     // Tier 4: 3-lib fights (one liberty deeper than Tier 3). Same shape:
     // windowed in playouts/expansion (phone speed), whole board when full
@@ -2334,14 +2412,20 @@ function findTacticalMove(b, koB, koActive, player, moves, lastR, lastC, info, f
                         var ol4 = countLibertiesCapped(probeBoard, libs4[qi].r,
                                                        libs4[qi].c, player, 3);
                         if ((cap4 || elib4 <= 2) && ol4 >= 2) {
-                            if (info) {
-                                info.tier = 4;
-                                if (cap4)
-                                    info.cap = true;
-                                else if (groupSizeCapped(b, qr, qc, qcol, 3) >= 3)
-                                    info.t4pres = true;
+                            if (!best) {
+                                if (info) {
+                                    info.tier = 4;
+                                    if (cap4)
+                                        info.cap = true;
+                                    else if (groupSizeCapped(b, qr, qc, qcol, 3) >= 3)
+                                        info.t4pres = true;
+                                }
+                                return m;
                             }
-                            return m;
+                            var asz4 = groupSizeCapped(b, qr, qc, qcol, 12);
+                            bestCands.push({ m: m, tier: 4, score: cap4 ? 1000 + asz4 : asz4,
+                                             cap: cap4, t3def: false, t3small: false,
+                                             t4pres: !cap4 && groupSizeCapped(b, qr, qc, qcol, 3) >= 3 });
                         }
                     } else {
                         // Defense: clean 4-lib breakout or capture forces;
@@ -2364,24 +2448,46 @@ function findTacticalMove(b, koB, koActive, player, moves, lastR, lastC, info, f
                         // point instead, e.g. D4 over consolidating D7).
                         // Small dd>=4 breakouts are prior-only (tier set).
                         if (dd4 >= 4 && lr4 !== 0 && lr4 !== 8 && lc4 !== 0 && lc4 !== 8) {
-                            if (info) {
-                                info.tier = 4;
-                                if (groupSizeCapped(b, qr, qc, qcol, 3) >= 3)
-                                    info.t3def = true;
+                            if (!best) {
+                                if (info) {
+                                    info.tier = 4;
+                                    if (groupSizeCapped(b, qr, qc, qcol, 3) >= 3)
+                                        info.t3def = true;
+                                }
+                                return m;
                             }
-                            return m;
+                            var dsz4 = groupSizeCapped(b, qr, qc, qcol, 12);
+                            bestCands.push({ m: m, tier: 4, score: dsz4,
+                                             cap: false, t3def: dsz4 >= 3, t3small: false, t4pres: false });
                         }
                         if (dd4 >= 2) {
                             // Live sidestep: prior-only pressure.
-                            if (info)
-                                info.tier = 4;
-                            return m;
+                            if (!best) {
+                                if (info)
+                                    info.tier = 4;
+                                return m;
+                            }
+                            var ssz4 = groupSizeCapped(b, qr, qc, qcol, 12);
+                            bestCands.push({ m: m, tier: 4, score: ssz4,
+                                             cap: false, t3def: false, t3small: false, t4pres: false });
                         }
                     }
                 }
             }
         }
         } // end t4pass
+    }
+    if (best && bestCands.length) {
+        // Tier-4 winner by stakes (Tier-3 had none).
+        bestCands.sort(function (a, b2) { return b2.score - a.score; });
+        var w4 = bestCands[0];
+        if (info) {
+            info.tier = 4;
+            if (w4.cap) info.cap = true;
+            if (w4.t3def) info.t3def = true;
+            if (w4.t4pres) info.t4pres = true;
+        }
+        return w4.m;
     }
     return -1;
 }
@@ -4169,6 +4275,7 @@ function handleAiRequest(payload) {
     var preInfo = {};
     var preMoves = getLegalMovesOn(gBoard, gKoBoard, gKoActive,
                                    currentPlayer);
+    // best-match disabled (r37-38: 99 vs 105 baseline, null result).
     var preIdx = findTacticalMove(gBoard, gKoBoard, gKoActive, currentPlayer,
                                   preMoves, lastRow, lastCol, preInfo, true);
     // Tier-2 escapes force only to strength (3+ libs post-move):
@@ -4224,11 +4331,15 @@ function handleAiRequest(payload) {
     // self-atari/eye-fill); no dead-arrival veto (eyeless is the premise).
     // Mid-game only (movesMade >= 10): opening "races" are skirmishes
     // best left to tactics/strategy (F6 misfire: -20pp on move 4).
+    // Direct force (A/B: ON 105 vs OFF 142 — net positive, keep forcing;
+    // a contender-demotion was tried and dropped: it neutered real races
+    // for march cases better handled by the march/abandon gates inside).
     // Ablation flag PEBBLE_NO_SEMEAI=1 (default off = enabled).
     var noSemeai = (typeof process !== 'undefined' && process.env &&
                     process.env.PEBBLE_NO_SEMEAI === '1');
     var sem = (noSemeai || movesMade < 10) ? null :
-        semeaiMove(gBoard, gKoBoard, gKoActive, currentPlayer);
+        semeaiMove(gBoard, gKoBoard, gKoActive, currentPlayer,
+                   lastRow, lastCol);
     if (sem) {
         if (simLegal(gBoard, gKoBoard, gKoActive, currentPlayer, sem[0], sem[1]) &&
             !putsSelfInAtari(gBoard, gKoBoard, gKoActive, currentPlayer, sem[0], sem[1]) &&
