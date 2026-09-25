@@ -1986,6 +1986,25 @@ function semeaiMove(b, koB, koActive, player, lastR, lastC) {
             // the guard never fired on the motivating march (close and
             // engaged), and abandoning needs reading, not thresholds.
             // Only the movesMade>=10 gate stays (demonstrated F6 fix).)
+            // March guard v2 (r42g1: six-march, 458pp): non-urgent races
+            // (our libs > 3) only when the opponent is engaged (last move
+            // within cheb 2 of either block). Marching alone while they
+            // take big points is the catastrophic failure mode. Urgent
+            // races (<=3 libs) always fight.
+            if (no > 3) {
+                var nearFight = false;
+                for (var q3 = 0; q3 < 81 && !nearFight; q3++) {
+                    var isOurs = lab.block[q3] === blk;
+                    var isTheirs = lab.block[q3] === oblk;
+                    if (!isOurs && !isTheirs)
+                        continue;
+                    var qr3 = Math.floor(q3 / 9), qc3 = q3 % 9;
+                    if (Math.max(Math.abs(qr3 - lastR), Math.abs(qc3 - lastC)) <= 2)
+                        nearFight = true;
+                }
+                if (!nearFight)
+                    continue;
+            }
             // Try every own liberty; maximize post-move differential.
             var preOpp = 0;
             for (var q = 0; q < 81; q++) {
@@ -2537,6 +2556,8 @@ function chooseScoredMove(b, koB, koActiveObj, player, moves, lastR, lastC, foll
             // Static strategy direction (precomputed grid, root-position
             // based so slightly stale deep in playouts — low weight).
             s += stratGrid[mr * BOARD_SIZE + mc] * 0.15;
+            // (Territory bonus tried r50-51 and REJECTED: 115 vs 105.
+            // Open-space preference in quiet playout moves measured null.)
         }
         scores[i] = s;
         if (s > best)
@@ -2594,10 +2615,11 @@ function chooseScoredMove(b, koB, koActiveObj, player, moves, lastR, lastC, foll
         if (connectCount(b, player, moves[i].r, moves[i].c) >= 2)
             scores[i] += 20;
         // Enemy cut: sitting between 2+ distinct enemy groups (+40), but
-        // ONLY small cuts (total ≤3 stones): diving between strong groups
-        // is suicide (fitted cutSize negative). Small peeps must still be
-        // taken or tenuki goes unpunished (split-walls lesson stands for
-        // thin cuts).
+        // ONLY small cuts (total ≤3 stones): universal cutting tested
+        // r48-49 and REJECTED (144 vs 105 — indiscriminate cutting makes
+        // chaotic playouts and punishes fight lines wrongly). Small peeps
+        // must still be taken or tenuki goes unpunished (split-walls
+        // lesson stands for thin cuts).
         else {
             var eb = moves[i].r, ec = moves[i].c;
             var eopp = (player === BLACK) ? WHITE : BLACK;
@@ -4003,6 +4025,11 @@ function decaySubtree(newRoot) {
 //    the unchanged board -> root at M (their turn).
 // Anything else (new game, mismatch, pool pressure) goes fresh.
 function tryReuseTree(currentPlayer) {
+    // Ablation flag PEBBLE_NO_REUSE=1 (default off = enabled): fresh tree
+    // every move. Tests whether reused subtrees carry stale values.
+    if (typeof process !== 'undefined' && process.env &&
+        process.env.PEBBLE_NO_REUSE === '1')
+        return MCTS_NO_NODE;
     if (!savedValid || savedRoot === MCTS_NO_NODE || savedRoot >= nodePoolUsed)
         return MCTS_NO_NODE;
     if (savedPlayer !== BLACK && savedPlayer !== WHITE)
@@ -4114,7 +4141,16 @@ function tryReuseTree(currentPlayer) {
 // must end here — never throw without replying, or the game appears hung
 // with dead buttons until the watch-side timeout fires. Also snapshots
 // the reply for next move's tree reuse (item 5).
+// Consecutive semeai replies (march circuit-breaker): following a race
+// 3+ moves in a row while the opponent takes big points elsewhere is how
+// 400pp+ games are lost (r36g1, r42g1 six-marches). Cap at 3; the 4th
+// consecutive falls through to strategy/search. Reset by any other reply
+// (tracked via semeaiSending around sendMoveReply).
+var semeaiStreak = 0;
+var semeaiSending = false;
 function sendMoveReply(moveRow, moveCol, isPass) {
+    if (!semeaiSending)
+        semeaiStreak = 0;
     saveReplyState(moveRow, moveCol, isPass);
     console.log('pkjs: sending result back to watch...');
     try {
@@ -4341,11 +4377,16 @@ function handleAiRequest(payload) {
         semeaiMove(gBoard, gKoBoard, gKoActive, currentPlayer,
                    lastRow, lastCol);
     if (sem) {
-        if (simLegal(gBoard, gKoBoard, gKoActive, currentPlayer, sem[0], sem[1]) &&
+        if (semeaiStreak >= 3) {
+            console.log('pkjs: semeai streak cap (march breaker), tenuki');
+        } else if (simLegal(gBoard, gKoBoard, gKoActive, currentPlayer, sem[0], sem[1]) &&
             !putsSelfInAtari(gBoard, gKoBoard, gKoActive, currentPlayer, sem[0], sem[1]) &&
             !fillsOwnEye(gBoard, sem[0], sem[1], currentPlayer)) {
             console.log('pkjs: semeai race (' + sem[0] + ',' + sem[1] + ')');
+            semeaiSending = true;
             sendMoveReply(sem[0], sem[1], 0);
+            semeaiSending = false;
+            semeaiStreak++;
             ponderStart(sem[0], sem[1], 0, currentPlayer);
             return;
         }
