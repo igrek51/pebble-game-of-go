@@ -1,9 +1,13 @@
-.PHONY: help build clean install screenshot logs start-emulator stop-emulator setup 2x test status kill kill-force wipe match run deploy deploy-lan deploy-tailscale btn-up btn-down btn-select btn-back emu emu-stop live-logs server-build server-up server-down server-logs server-health
+.PHONY: help build clean install screenshot logs start-emulator stop-emulator setup 2x test status kill kill-force wipe match run deploy deploy-lan deploy-tailscale btn-up btn-down btn-select btn-back emu emu-stop live-logs docker-build docker-up docker-down docker-logs docker-push remote-docker-pull
 
 NAME := pebble-game-of-go
 PHONE_IP := 192.168.0.37
 PHONE_LAN_IP := 192.168.0.37
 PHONE_TAILSCALE_IP := 100.107.175.36
+GITLAB_IMAGE := registry.gitlab.com/igrek51/katago
+GITLAB_TAG ?= 1.0
+# Remote host for deploys (override: make remote-docker-pull SSH_HOST=user@other)
+SSH_HOST ?= sirius
 
 help:
 	@echo "Targets:"
@@ -13,8 +17,9 @@ help:
 	@echo "  btn-up / btn-down / btn-select / btn-back  Emulator button presses"
 	@echo "  match                              Start AI vs AI demo on emulator"
 	@echo "  screenshot / logs / live-logs      Capture screen, emulator/phone logs"
-	@echo "  server-build / server-up / server-down / server-logs / server-health"
+	@echo "  docker-build / docker-up / docker-down / docker-logs / docker-push"
 	@echo "                                   KataGo AI server (docker, :2718)"
+	@echo "  remote-docker-pull               Pull server image on remote host (SSH_HOST)"
 
 setup:
 	@echo "Setting up Pebble SDK..."
@@ -139,5 +144,21 @@ docker-down:
 
 docker-logs:
 	docker logs -f server-katago-1
+
+# Push the server image to GitLab (https://gitlab.com/igrek51/katago ->
+# container registry). Login once first:
+#   docker login registry.gitlab.com   (PAT with write_registry scope)
+# Override the tag:  make docker-push GITLAB_TAG=1.1
+docker-push: docker-build
+	@echo "Pushing $(GITLAB_IMAGE):$(GITLAB_TAG)..."
+	docker tag pebble-katago:1.0 $(GITLAB_IMAGE):$(GITLAB_TAG)
+	docker push $(GITLAB_IMAGE):$(GITLAB_TAG)
+	@echo "✓ Pushed $(GITLAB_IMAGE):$(GITLAB_TAG)"
+
+# Pull the server image on the remote host over ssh (-t keeps docker's
+# progress animation live). Override host/tag:
+#   make remote-docker-pull SSH_HOST=user@other GITLAB_TAG=1.1
+remote-docker-pull:
+	ssh -t $(SSH_HOST) 'docker pull $(GITLAB_IMAGE):$(GITLAB_TAG)'
 
 .DEFAULT_GOAL := help
