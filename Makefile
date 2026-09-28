@@ -1,4 +1,4 @@
-.PHONY: help build clean install screenshot logs start-emulator stop-emulator setup 2x test status kill kill-force wipe match run deploy deploy-lan deploy-tailscale btn-up btn-down btn-select btn-back emu emu-stop live-logs docker-build docker-up docker-down docker-logs docker-push remote-docker-pull
+.PHONY: help build clean install screenshot logs start-emulator stop-emulator setup 2x test status kill kill-force wipe match run deploy deploy-lan deploy-tailscale btn-up btn-down btn-select btn-back emu emu-stop live-logs docker-build docker-up docker-down docker-logs docker-push remote-docker-pull remote-docker-compose-up
 
 NAME := pebble-game-of-go
 PHONE_IP := 192.168.0.37
@@ -8,6 +8,8 @@ GITLAB_IMAGE := registry.gitlab.com/igrek51/katago
 GITLAB_TAG ?= 1.0
 # Remote host for deploys (override: make remote-docker-pull SSH_HOST=user@other)
 SSH_HOST ?= sirius
+# Remote dir holding docker-compose.yaml on the host
+REMOTE_DIR := /opt/katago
 
 help:
 	@echo "Targets:"
@@ -20,6 +22,7 @@ help:
 	@echo "  docker-build / docker-up / docker-down / docker-logs / docker-push"
 	@echo "                                   KataGo AI server (docker, :2718)"
 	@echo "  remote-docker-pull               Pull server image on remote host (SSH_HOST)"
+	@echo "  remote-docker-compose-up         Ship compose file, start server on remote host"
 
 setup:
 	@echo "Setting up Pebble SDK..."
@@ -155,10 +158,18 @@ docker-push: docker-build
 	docker push $(GITLAB_IMAGE):$(GITLAB_TAG)
 	@echo "✓ Pushed $(GITLAB_IMAGE):$(GITLAB_TAG)"
 
-# Pull the server image on the remote host over ssh (-t keeps docker's
-# progress animation live). Override host/tag:
-#   make remote-docker-pull SSH_HOST=user@other GITLAB_TAG=1.1
 remote-docker-pull:
 	ssh -t $(SSH_HOST) 'docker pull $(GITLAB_IMAGE):$(GITLAB_TAG)'
+
+# Ship src/docker-compose.remote.yaml to the remote host as
+# /opt/katago/docker-compose.yaml and (re)start the server there.
+# Image tag follows GITLAB_TAG:
+#   make remote-docker-compose-up GITLAB_TAG=1.1
+remote-docker-compose-up:
+	ssh -t $(SSH_HOST) 'mkdir -p $(REMOTE_DIR)'
+	scp server/docker-compose.remote.yaml $(SSH_HOST):$(REMOTE_DIR)/docker-compose.yaml
+	ssh -t $(SSH_HOST) 'cd $(REMOTE_DIR) && KATAGO_IMAGE=$(GITLAB_IMAGE):$(GITLAB_TAG) docker compose up -d'
+
+deploy-server: docker-build docker-push remote-docker-pull remote-docker-compose-up
 
 .DEFAULT_GOAL := help

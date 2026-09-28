@@ -1,13 +1,13 @@
-# Local run: docker compose up --build
-# Server on http://localhost:2718 (GET /health, POST /move, POST /score).
-# To use your own nets without rebuilding, uncomment the volume and set
-# MODEL_PATH / HUMAN_MODEL_PATH accordingly.
+# Remote (production) compose for katago.igrek.dev: runs the prebuilt
+# registry image, no build context needed. Port is bound to localhost
+# only — TLS/edge is handled in front (Cloudflare Tunnel or host nginx).
+# Override image: KATAGO_IMAGE=registry.gitlab.com/igrek51/katago:1.1 docker compose up -d
 services:
   katago:
-    build: .
     container_name: katago
+    image: ${KATAGO_IMAGE:-registry.gitlab.com/igrek51/katago:1.0}
     ports:
-      - "2718:2718"
+      - "0.0.0.0:2718:2718"
     environment:
       MOVE_VISITS: "8"
       SCORE_VISITS: "150"
