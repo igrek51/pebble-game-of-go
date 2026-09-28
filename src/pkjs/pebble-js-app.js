@@ -4210,7 +4210,7 @@ Pebble.addEventListener('ready', function() {
 // KATAGO_SERVER_URL must be reachable from the PHONE (not the watch):
 // default is this dev machine on LAN; point it at your deployed server
 // later. Empty string disables the server path entirely.
-var KATAGO_SERVER_URL = 'http://100.123.2.127:2718/move';
+var KATAGO_SERVER_URL = 'https://katago.igrek.dev/move';
 var KATAGO_PROFILE = 'rank_12k';
 var KATAGO_TIMEOUT_MS = 25000;
 if (typeof process !== 'undefined' && process.env) {
