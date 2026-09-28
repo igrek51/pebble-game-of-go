@@ -123,24 +123,21 @@ clean:
 
 # KataGo AI server (Human SL, serves pkjs): image ~400MB, first build
 # downloads KataGo + nets (~165MB, pinned URLs in server/Dockerfile).
-server-build:
+docker-build:
 	@echo "Building KataGo server image..."
 	docker build -t pebble-katago:1.0 ./server
 	@echo "✓ Server image ready: pebble-katago:1.0"
 
-server-up:
+docker-up:
 	@echo "Starting KataGo server (health: up to ~3 min for model load)..."
 	docker compose -f server/docker-compose.yml up -d --build
 	@echo "✓ Server starting on :2718 (use 'make server-health')"
 
-server-down:
+docker-down:
 	docker compose -f server/docker-compose.yml down
 	@echo "✓ Server stopped"
 
-server-logs:
+docker-logs:
 	docker logs -f server-katago-1
-
-server-health:
-	curl -s localhost:2718/health; echo
 
 .DEFAULT_GOAL := help
