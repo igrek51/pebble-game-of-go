@@ -4148,6 +4148,9 @@ function tryReuseTree(currentPlayer) {
 // (tracked via semeaiSending around sendMoveReply).
 var semeaiStreak = 0;
 var semeaiSending = false;
+// Request context for the post-reply server score estimate (set per
+// appmessage, consumed by sendMoveReply).
+var gReqCtx = null;
 function sendMoveReply(moveRow, moveCol, isPass) {
     if (!semeaiSending)
         semeaiStreak = 0;
@@ -4166,6 +4169,105 @@ function sendMoveReply(moveRow, moveCol, isPass) {
         });
     } catch (e) {
         console.log('pkjs: sendAppMessage threw: ' + (e && e.message));
+    }
+    // High-quality server score for the live banner (fire-and-forget):
+    // skipped for error replies and while one is already in flight (the
+    // server answers one query at a time; never block the next /move).
+    if (isPass !== 2)
+        requestServerScore(moveRow, moveCol, isPass);
+}
+
+// ---- Server-side score estimate (/score) ----
+// After every AI reply, ask the server for the post-move position's
+// winrate/scoreLead (b10c128, modest visits for latency) and push it to
+// the watch as a type-2 message. The watch applies it only when its
+// (moves, passes) still match — otherwise it's stale and ignored.
+var KATAGO_SCORE_URL = 'https://katago.igrek.dev/score';
+var KATAGO_SCORE_VISITS = 50;
+if (typeof process !== 'undefined' && process.env) {
+    if (process.env.PEBBLE_SERVER_SCORE_URL)
+        KATAGO_SCORE_URL = process.env.PEBBLE_SERVER_SCORE_URL;
+}
+var scorePending = false;
+var srvScoreBoard = new Array(BOARD_SIZE * BOARD_SIZE);
+var srvScoreKo = new Array(BOARD_SIZE * BOARD_SIZE);
+function requestServerScore(moveRow, moveCol, isPass) {
+    if (!KATAGO_SCORE_URL || typeof XMLHttpRequest === 'undefined' ||
+        scorePending || !gReqCtx)
+        return;
+    var ctx = gReqCtx;
+    var opp = (ctx.player === BLACK) ? WHITE : BLACK;
+    copyBoard(srvScoreBoard, gBoard);
+    copyBoard(srvScoreKo, gKoBoard);
+    var forMoves = ctx.movesMade, forPasses = ctx.passes;
+    if (isPass) {
+        forPasses++;
+    } else {
+        var ap = simTryPlace(srvScoreBoard, srvScoreKo, gKoActive, ctx.player,
+                             moveRow, moveCol);
+        if (!ap.success)
+            return;
+        forMoves++;
+        forPasses = 0;
+    }
+    var bStones = [], wStones = [];
+    for (var i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
+        var r = Math.floor(i / BOARD_SIZE), c = i % BOARD_SIZE;
+        if (srvScoreBoard[i] === BLACK)
+            bStones.push(rcToGtp(r, c));
+        else if (srvScoreBoard[i] === WHITE)
+            wStones.push(rcToGtp(r, c));
+    }
+    var body = JSON.stringify({
+        stones: { B: bStones, W: wStones },
+        toMove: opp === BLACK ? 'B' : 'W',
+        visits: KATAGO_SCORE_VISITS
+    });
+    var xhr;
+    try {
+        xhr = new XMLHttpRequest();
+        xhr.open('POST', KATAGO_SCORE_URL, true);
+        try {
+            xhr.timeout = KATAGO_TIMEOUT_MS;
+        } catch (e) {}
+    } catch (e) {
+        return;
+    }
+    scorePending = true;
+    xhr.onreadystatechange = function() {
+        if (!xhr || xhr.readyState !== 4)
+            return;
+        scorePending = false;
+        try {
+            if (xhr.status !== 200)
+                return;
+            var res = JSON.parse(xhr.responseText);
+            var lead = res.scoreLead, win = res.winrate;
+            if (typeof lead !== 'number' || typeof win !== 'number')
+                return;
+            // Server numbers are side-to-move (opponent) perspective;
+            // the watch banner is Black-relative.
+            if (opp !== BLACK) {
+                lead = -lead;
+                win = 1 - win;
+            }
+            Pebble.sendAppMessage({
+                0: 2,
+                1: Math.round(lead * 10),
+                2: Math.round(win * 100),
+                3: forMoves,
+                4: forPasses
+            }, function() {}, function() {});
+            console.log('pkjs: server score B' +
+                        (lead >= 0 ? '+' : '') + lead.toFixed(1));
+        } catch (e) {
+            console.log('pkjs: server score failed: ' + (e && e.message));
+        }
+    };
+    try {
+        xhr.send(body);
+    } catch (e) {
+        scorePending = false;
     }
 }
 
@@ -4389,6 +4491,8 @@ function handleAiRequest(payload) {
     }
     console.log('pkjs: player=' + currentPlayer + ' last=(' + lastRow + ',' + lastCol + ') passes=' + consecutivePasses + ' moves=' + movesMade);
     reqPlayer = currentPlayer;
+    gReqCtx = { player: currentPlayer, movesMade: movesMade,
+                passes: consecutivePasses };
 
     // Server-side 12k (Human SL) first; the local engine below is the
     // offline fallback. Server replies arrive asynchronously.

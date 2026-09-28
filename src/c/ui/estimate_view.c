@@ -27,10 +27,26 @@ static void estimate_update_proc(Layer *layer, GContext *ctx) {
     graphics_context_set_fill_color(ctx, GColorBlue);
     graphics_fill_rect(ctx, GRect(0, 0, width, 25), 0, GCornerNone);
     graphics_context_set_text_color(ctx, GColorWhite);
-    graphics_draw_text(ctx, "Estimate",
-                       fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                       GRect(5, 0, 110, 20), GTextOverflowModeWordWrap,
-                       GTextAlignmentLeft, NULL);
+    // Fresh server estimate: win chance for the side to move on the left
+    // (server pct is Black-relative, convert for White). Otherwise the
+    // plain title (local heuristic has no winrate).
+    int side_pct = -1;
+    if (server_score_fresh(NULL, &side_pct)) {
+        if (current_player != BLACK)
+            side_pct = 100 - side_pct;
+        char win[16];
+        snprintf(win, sizeof(win), "%s %d%%",
+                 current_player == BLACK ? "Black" : "White", side_pct);
+        graphics_draw_text(ctx, win,
+                           fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                           GRect(5, 0, 110, 20), GTextOverflowModeWordWrap,
+                           GTextAlignmentLeft, NULL);
+    } else {
+        graphics_draw_text(ctx, "Estimate",
+                           fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                           GRect(5, 0, 110, 20), GTextOverflowModeWordWrap,
+                           GTextAlignmentLeft, NULL);
+    }
     int abs_diff = s_diff_10x < 0 ? -s_diff_10x : s_diff_10x;
     char score[16];
     snprintf(score, sizeof(score), "B%c%d.%d", (s_diff_10x >= 0 ? '+' : '-'),
@@ -148,8 +164,12 @@ static void estimate_click_config(Window *window) {
 void estimate_view_show(void (*on_close)(void)) {
     // One shared influence map drives both the tint and the number, so the
     // view always agrees with itself 1:1. Dead marks come from the same
-    // removal underneath.
-    s_diff_10x = score_influence_10x(board, s_owner);
+    // removal underneath. A fresh server estimate replaces the number only
+    // (tint stays local).
+    if (!server_score_fresh(&s_diff_10x, NULL))
+        s_diff_10x = score_influence_10x(board, s_owner);
+    else
+        score_influence_10x(board, s_owner);
     find_dead_map(board, s_dead);
     s_on_close = on_close;
     if (!s_window) {

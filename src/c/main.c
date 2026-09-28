@@ -781,9 +781,24 @@ static void window_load(Window *window) {
 
 static void window_unload(Window *window) { layer_destroy(s_canvas_layer); }
 
+// Server score estimate (type-2, KataGo /score): store and refresh the
+// banner/overlay if still fresh. Stale estimates (user already moved)
+// are ignored by the freshness check at render time.
+static void on_server_score(int score_10x, int black_pct, int for_moves,
+                            int for_passes) {
+    int a10 = score_10x < 0 ? -score_10x : score_10x;
+    APP_LOG(APP_LOG_LEVEL_INFO, "game: server score B%c%d.%d B%d%% (moves=%d passes=%d)",
+            score_10x >= 0 ? '+' : '-', a10 / 10, a10 % 10, black_pct,
+            for_moves, for_passes);
+    server_score_set(score_10x, black_pct, for_moves, for_passes);
+    if (s_canvas_layer)
+        layer_mark_dirty(s_canvas_layer);
+}
+
 static void init(void) {
     mcts_init_zobrist();
     comm_init();
+    comm_set_score_callback(on_server_score);
     init_board_full();
     s_main_window = window_create();
     window_set_window_handlers(

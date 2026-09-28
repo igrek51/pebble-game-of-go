@@ -24,7 +24,8 @@ POST /move response:
   {"move": "C3" | "pass", "winrate": 0.45, "scoreLead": -0.3,
    "profile": "rank_10k"}
 
-POST /score request: same board payload as /move.
+POST /score request: same board payload as /move, plus optional
+  "visits" (1..500, default SCORE_VISITS) trading accuracy for latency.
 POST /score response:
   {"currentPlayer": "B", "winrate": 0.45, "scoreLead": -0.3,
    "scoreStdev": 12.0, "ownership": [<81 floats>]}
@@ -279,10 +280,18 @@ def handle_move(moves, initial_stones, initial_player, komi, profile):
     }
 
 
-def handle_score(moves, initial_stones, initial_player, komi):
+def validate_visits(body):
+    visits = body.get("visits", SCORE_VISITS)
+    if (isinstance(visits, bool) or not isinstance(visits, int)
+            or visits < 1 or visits > 500):
+        raise ValueError("visits must be an integer 1..500")
+    return visits
+
+
+def handle_score(moves, initial_stones, initial_player, komi, visits):
     query = {
         "id": uuid.uuid4().hex, "moves": moves, "rules": RULES, "komi": komi,
-        "boardXSize": SIZE, "boardYSize": SIZE, "maxVisits": SCORE_VISITS,
+        "boardXSize": SIZE, "boardYSize": SIZE, "maxVisits": visits,
         "includeOwnership": True,
     }
     if initial_stones is not None:
@@ -312,6 +321,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+        shown = body.decode(errors="replace")
+        if len(shown) > 300:
+            shown = shown[:300] + "..."
+        print(f"{self.command} {self.path} -> {code} {shown}", flush=True)
 
     def do_GET(self):
         if self.path == "/health":
@@ -338,9 +351,14 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             self._send(400, {"error": "malformed JSON"})
             return
+        shown = json.dumps(body)
+        if len(shown) > 300:
+            shown = shown[:300] + "..."
+        print(f"{self.command} {self.path} {shown}", flush=True)
         try:
             moves, initial_stones, initial_player, komi = validate_board(body)
             profile = validate_profile(body) if self.path == "/move" else None
+            visits = validate_visits(body) if self.path == "/score" else None
         except ValueError as e:
             self._send(400, {"error": str(e)})
             return
@@ -356,7 +374,7 @@ class Handler(BaseHTTPRequestHandler):
                                             initial_player, komi, profile))
             else:
                 self._send(200, handle_score(moves, initial_stones,
-                                             initial_player, komi))
+                                             initial_player, komi, visits))
         except RuntimeError as e:
             msg = str(e)
             self._send(400 if "katago:" in msg else 502, {"error": msg})

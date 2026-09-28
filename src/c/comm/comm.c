@@ -3,6 +3,7 @@
 #include "../logic/board.h"
 
 static comm_ai_move_callback s_pending_callback = NULL;
+static comm_score_callback s_score_callback = NULL;
 static AppTimer *s_timeout_timer = NULL;
 static bool s_request_active = false;
 
@@ -41,14 +42,37 @@ static void comm_timeout_handler(void *data) {
 }
 
 static void comm_inbox_handler(DictionaryIterator *iter, void *context) {
+    Tuple *type_tuple = dict_find(iter, 0);
+    int msg_type = -1;
+    if (!tuple_get_int(type_tuple, &msg_type)) {
+        APP_LOG(APP_LOG_LEVEL_DEBUG, "comm: inbox msg ignored (no type)");
+        return;
+    }
+
+    // Server score estimate: arrives after the move reply, with no active
+    // request by design. Never touches the move timeout.
+    if (msg_type == 2) {
+        int s10 = 0, pct = 50, fm = -1, fp = -1;
+        tuple_get_int(dict_find(iter, 2), &pct);
+        if (!tuple_get_int(dict_find(iter, 1), &s10) ||
+            !tuple_get_int(dict_find(iter, 3), &fm) ||
+            !tuple_get_int(dict_find(iter, 4), &fp)) {
+            APP_LOG(APP_LOG_LEVEL_DEBUG, "comm: score msg malformed, ignored");
+            return;
+        }
+        APP_LOG(APP_LOG_LEVEL_INFO, "comm: GOT SCORE from pkjs: %d (B%d%%, moves=%d passes=%d)",
+                s10, pct, fm, fp);
+        if (s_score_callback)
+            s_score_callback(s10, pct, fm, fp);
+        return;
+    }
+
     if (!s_request_active) {
         APP_LOG(APP_LOG_LEVEL_DEBUG, "comm: inbox msg ignored (no active request)");
         return;
     }
 
-    Tuple *type_tuple = dict_find(iter, 0);
-    int msg_type = -1;
-    if (!tuple_get_int(type_tuple, &msg_type) || msg_type != 1) {
+    if (msg_type != 1) {
         APP_LOG(APP_LOG_LEVEL_DEBUG, "comm: inbox msg ignored (type=%d)", msg_type);
         return;
     }
@@ -172,6 +196,10 @@ void comm_request_ai_move(uint8_t current_player, int last_row, int last_col,
     APP_LOG(APP_LOG_LEVEL_DEBUG, "comm: msg sent, timeout in %dms", COMM_TIMEOUT_MS);
     s_timeout_timer =
         app_timer_register(COMM_TIMEOUT_MS, comm_timeout_handler, NULL);
+}
+
+void comm_set_score_callback(comm_score_callback callback) {
+    s_score_callback = callback;
 }
 
 void comm_cancel(void) {

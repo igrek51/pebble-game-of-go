@@ -68,7 +68,11 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
         snprintf(right_text, sizeof(right_text), "%c%d.5",
                  (diff_10x >= 0 ? 'B' : 'W'), abs_diff_10x / 10);
     } else {
-        int diff_10x = estimate_score_10x_logic();
+        // Fresh server estimate (KataGo /score) outranks the local
+        // influence heuristic; stale/missing falls back to it.
+        int diff_10x;
+        if (!server_score_fresh(&diff_10x, NULL))
+            diff_10x = estimate_score_10x_logic();
         int abs_diff_10x = diff_10x < 0 ? -diff_10x : diff_10x;
         snprintf(right_text, sizeof(right_text), "B%c%d.%d",
                  (diff_10x >= 0 ? '+' : '-'), abs_diff_10x / 10,
