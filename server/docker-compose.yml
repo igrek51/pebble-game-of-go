@@ -1,0 +1,22 @@
+# Local run: docker compose up --build
+# Server on http://localhost:2718 (GET /health, POST /move, POST /score).
+# To use your own nets without rebuilding, uncomment the volume and set
+# MODEL_PATH / HUMAN_MODEL_PATH accordingly.
+services:
+  katago:
+    build: .
+    ports:
+      - "2718:2718"
+    environment:
+      MOVE_VISITS: "8"
+      SCORE_VISITS: "150"
+    # volumes:
+    #   - ./nets:/opt/katago-nets:ro
+    restart: unless-stopped
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import json,urllib.request;urllib.request.urlopen('http://localhost:2718/health')\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s

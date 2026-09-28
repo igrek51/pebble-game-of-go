@@ -4200,6 +4200,143 @@ Pebble.addEventListener('ready', function() {
     gKoActive = false;
 });
 
+// ---- Server-side AI (KataGo Human SL, OnlineGo recipe) ----
+// Primary move source: POST the board stones to the KataGo server, which
+// samples the rank-conditioned human policy (default 12 kyu). The stones
+// payload needs no move history, so undo/new-game just work. Every reply
+// is legality/safety-checked here (stones can't express the ko ban), and
+// ANY failure (no XHR, offline, timeout, bad/unsafe reply) falls back to
+// the local engine — offline play keeps working.
+// KATAGO_SERVER_URL must be reachable from the PHONE (not the watch):
+// default is this dev machine on LAN; point it at your deployed server
+// later. Empty string disables the server path entirely.
+var KATAGO_SERVER_URL = 'http://100.123.2.127:2718/move';
+var KATAGO_PROFILE = 'rank_12k';
+var KATAGO_TIMEOUT_MS = 25000;
+if (typeof process !== 'undefined' && process.env) {
+    if (process.env.PEBBLE_SERVER_URL)
+        KATAGO_SERVER_URL = process.env.PEBBLE_SERVER_URL;
+    if (process.env.PEBBLE_SERVER_PROFILE)
+        KATAGO_PROFILE = process.env.PEBBLE_SERVER_PROFILE;
+}
+var GTP_COLS = 'ABCDEFGHJ';
+function rcToGtp(r, c) {
+    return GTP_COLS.charAt(c) + (BOARD_SIZE - r);
+}
+function gtpToRc(m) {
+    if (m === 'pass')
+        return { pass: true };
+    if (typeof m !== 'string' || m.length < 2 || m.length > 3)
+        return null;
+    var ci = GTP_COLS.indexOf(m.charAt(0).toUpperCase());
+    var n = parseInt(m.slice(1), 10);
+    if (ci < 0 || !(n >= 1 && n <= BOARD_SIZE))
+        return null;
+    return { r: BOARD_SIZE - n, c: ci };
+}
+// Same safety bar as the local root veto: never play an immediately-dead
+// server suggestion when the local engine can move instead.
+function serverUnsafe(player, r, c) {
+    if (!simLegal(gBoard, gKoBoard, gKoActive, player, r, c))
+        return 'illegal';
+    if (putsSelfInAtari(gBoard, gKoBoard, gKoActive, player, r, c))
+        return 'self-atari';
+    if (fillsOwnEye(gBoard, r, c, player))
+        return 'eye-fill';
+    if (eyeSpaceVerdict(gBoard, gKoBoard, gKoActive, player, r, c) === 'kill')
+        return 'eye-kill';
+    if (lifeStoneDeadOnArrival(gBoard, gKoBoard, gKoActive, player, r, c))
+        return 'dead-arrival';
+    if (isEscapeMove(gBoard, player, r, c) &&
+        escapeVerdict(gBoard, gKoBoard, gKoActive, player, r, c) !== 'ok')
+        return 'bad-escape';
+    return null;
+}
+// Returns true when the server request was dispatched: the reply (or a
+// local-engine fallback on any failure) arrives later via sendMoveReply.
+// Returns false when the server path is unavailable — caller must run
+// the local engine synchronously.
+function requestServerMove(player, lastRow, lastCol, passes, movesMade) {
+    if (!KATAGO_SERVER_URL || typeof XMLHttpRequest === 'undefined')
+        return false;
+    var bStones = [], wStones = [];
+    for (var i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
+        if (gBoard[i] === BLACK)
+            bStones.push(rcToGtp(Math.floor(i / BOARD_SIZE), i % BOARD_SIZE));
+        else if (gBoard[i] === WHITE)
+            wStones.push(rcToGtp(Math.floor(i / BOARD_SIZE), i % BOARD_SIZE));
+    }
+    var body = JSON.stringify({
+        stones: { B: bStones, W: wStones },
+        toMove: player === BLACK ? 'B' : 'W',
+        profile: KATAGO_PROFILE
+    });
+    var xhr;
+    try {
+        xhr = new XMLHttpRequest();
+    } catch (e) {
+        return false;
+    }
+    var done = false;
+    var fallback = function(why) {
+        if (done)
+            return;
+        done = true;
+        console.log('pkjs: server AI fallback (' + why + '), local engine');
+        localAiMove(player, lastRow, lastCol, passes, movesMade);
+    };
+    try {
+        xhr.open('POST', KATAGO_SERVER_URL, true);
+        try {
+            xhr.timeout = KATAGO_TIMEOUT_MS;
+        } catch (e) {}
+    } catch (e) {
+        return false;
+    }
+    xhr.onreadystatechange = function() {
+        if (!xhr || xhr.readyState !== 4 || done)
+            return;
+        var err = null, ok = false;
+        try {
+            if (xhr.status !== 200)
+                throw new Error('http ' + xhr.status);
+            var res = JSON.parse(xhr.responseText);
+            var rc = gtpToRc(res && res.move);
+            if (!rc)
+                throw new Error('bad move ' + (res && res.move));
+            if (rc.pass) {
+                if (movesMade < PKJS_PASS_MIN_MOVES)
+                    throw new Error('early pass');
+                console.log('pkjs: server (' + res.profile + ') passes');
+                sendMoveReply(0, 0, 1);
+                ok = true;
+            } else {
+                var bad = serverUnsafe(player, rc.r, rc.c);
+                if (bad)
+                    throw new Error('unsafe ' + bad);
+                console.log('pkjs: server (' + res.profile + ') plays ' +
+                            res.move);
+                sendMoveReply(rc.r, rc.c, 0);
+                ok = true;
+            }
+        } catch (e) {
+            err = e;
+        }
+        done = true;
+        if (!ok) {
+            console.log('pkjs: server AI fallback (' +
+                        (err && err.message) + '), local engine');
+            localAiMove(player, lastRow, lastCol, passes, movesMade);
+        }
+    };
+    try {
+        xhr.send(body);
+    } catch (e) {
+        return false;
+    }
+    return true;
+}
+
 // ---- Pebble app message handler ----
 
 Pebble.addEventListener('appmessage', function(e) {
@@ -4253,6 +4390,17 @@ function handleAiRequest(payload) {
     console.log('pkjs: player=' + currentPlayer + ' last=(' + lastRow + ',' + lastCol + ') passes=' + consecutivePasses + ' moves=' + movesMade);
     reqPlayer = currentPlayer;
 
+    // Server-side 12k (Human SL) first; the local engine below is the
+    // offline fallback. Server replies arrive asynchronously.
+    if (requestServerMove(currentPlayer, lastRow, lastCol,
+                          consecutivePasses, movesMade))
+        return;
+    localAiMove(currentPlayer, lastRow, lastCol, consecutivePasses,
+                movesMade);
+}
+
+function localAiMove(currentPlayer, lastRow, lastCol, consecutivePasses,
+                     movesMade) {
     // Opening book first (moves 1-2): deterministic, no search needed.
     var bookMove = openingBookMove(gBoard, movesMade, currentPlayer);
     if (bookMove) {
