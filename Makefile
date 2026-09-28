@@ -1,4 +1,4 @@
-.PHONY: help build clean install screenshot logs start-emulator stop-emulator setup 2x test status kill kill-force wipe match run deploy deploy-lan deploy-tailscale btn-up btn-down btn-select btn-back emu emu-stop live-logs
+.PHONY: help build clean install screenshot logs start-emulator stop-emulator setup 2x test status kill kill-force wipe match run deploy deploy-lan deploy-tailscale btn-up btn-down btn-select btn-back emu emu-stop live-logs server-build server-up server-down server-logs server-health
 
 NAME := pebble-game-of-go
 PHONE_IP := 192.168.0.37
@@ -13,6 +13,8 @@ help:
 	@echo "  btn-up / btn-down / btn-select / btn-back  Emulator button presses"
 	@echo "  match                              Start AI vs AI demo on emulator"
 	@echo "  screenshot / logs / live-logs      Capture screen, emulator/phone logs"
+	@echo "  server-build / server-up / server-down / server-logs / server-health"
+	@echo "                                   KataGo AI server (docker, :2718)"
 
 setup:
 	@echo "Setting up Pebble SDK..."
@@ -118,5 +120,27 @@ clean:
 	@echo "Cleaning build artifacts..."
 	rm -rf build/
 	@echo "✓ Clean complete"
+
+# KataGo AI server (Human SL, serves pkjs): image ~400MB, first build
+# downloads KataGo + nets (~165MB, pinned URLs in server/Dockerfile).
+server-build:
+	@echo "Building KataGo server image..."
+	docker build -t pebble-katago:1.0 ./server
+	@echo "✓ Server image ready: pebble-katago:1.0"
+
+server-up:
+	@echo "Starting KataGo server (health: up to ~3 min for model load)..."
+	docker compose -f server/docker-compose.yml up -d --build
+	@echo "✓ Server starting on :2718 (use 'make server-health')"
+
+server-down:
+	docker compose -f server/docker-compose.yml down
+	@echo "✓ Server stopped"
+
+server-logs:
+	docker logs -f server-katago-1
+
+server-health:
+	curl -s localhost:2718/health; echo
 
 .DEFAULT_GOAL := help
