@@ -5,6 +5,7 @@
 services:
   katago:
     build: .
+    image: pebble-katago:1.0
     container_name: katago
     ports:
       - "2718:2718"

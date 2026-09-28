@@ -44,6 +44,7 @@ import json
 import os
 import random
 import re
+import signal
 import subprocess
 import threading
 import uuid
@@ -153,6 +154,8 @@ class Engine:
              "-model", MODEL_PATH, "-human-model", HUMAN_MODEL_PATH],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, text=True, bufsize=1)
+        global CURRENT_PROC
+        CURRENT_PROC = self.proc
         for line in self.proc.stdout:
             if "Started, ready to begin handling requests" in line:
                 break
@@ -191,7 +194,43 @@ class Engine:
         return self._raw(query)
 
 
+class Server(ThreadingHTTPServer):
+    # In-flight requests must not block process exit on SIGTERM.
+    daemon_threads = True
+    allow_reuse_address = True
+
+
 ENGINE = None
+HTTPD = None
+CURRENT_PROC = None
+STOP = threading.Event()
+
+
+def cleanup_child():
+    """Terminate the KataGo child promptly (wait 5s, then kill)."""
+    global CURRENT_PROC
+    proc = CURRENT_PROC
+    if proc is None or proc.poll() is not None:
+        return
+    try:
+        proc.terminate()
+        proc.wait(timeout=5)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def on_signal(signum, frame):
+    print(f"got signal {signum}, shutting down", flush=True)
+    STOP.set()
+    try:
+        if HTTPD is not None:
+            HTTPD.shutdown()
+    except Exception:
+        pass
+    cleanup_child()
 
 
 def sample_human_move(human_policy):
@@ -326,12 +365,21 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    global ENGINE
-    server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    ENGINE = Engine()  # blocks until katago is ready; /health 503 meanwhile
+    global ENGINE, HTTPD
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGINT, on_signal)
+    HTTPD = Server(("0.0.0.0", PORT), Handler)
+    threading.Thread(target=HTTPD.serve_forever, daemon=True).start()
+    try:
+        ENGINE = Engine()  # blocks until katago is ready; /health 503 meanwhile
+    except RuntimeError:
+        if STOP.is_set():
+            return  # SIGTERM during startup, child already reaped
+        raise
     print(f"ready on :{PORT} katago={ENGINE.version}", flush=True)
-    threading.Event().wait()
+    while not STOP.wait(0.5):
+        pass
+    cleanup_child()
 
 
 if __name__ == "__main__":

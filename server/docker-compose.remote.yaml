@@ -1,7 +1,3 @@
-# Remote (production) compose for katago.igrek.dev: runs the prebuilt
-# registry image, no build context needed. Port is bound to localhost
-# only — TLS/edge is handled in front (Cloudflare Tunnel or host nginx).
-# Override image: KATAGO_IMAGE=registry.gitlab.com/igrek51/katago:1.1 docker compose up -d
 services:
   katago:
     container_name: katago
