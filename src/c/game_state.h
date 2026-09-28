@@ -33,6 +33,14 @@ extern bool last_move_placed;
 
 void init_board_logic(void);
 
+// Snap a 0.1pt score to the nearest possible final margin (komi 7.5
+// makes exact results always n+0.5): 54->55, 59->55, 61->65, -4->-5.
+static inline int round_10x_to_half(int v) {
+    int q = v - 5;
+    int r = (q >= 0) ? (q + 5) / 10 : -((-q + 5) / 10);
+    return r * 10 + 5;
+}
+
 // Server score estimate (type-2 message from pkjs): set on arrival,
 // fresh only while (moves_made, consecutive_passes) still match.
 // score_10x and black_pct (Black winrate 0-100) are Black-relative.

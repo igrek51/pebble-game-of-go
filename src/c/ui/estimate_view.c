@@ -170,6 +170,7 @@ void estimate_view_show(void (*on_close)(void)) {
         s_diff_10x = score_influence_10x(board, s_owner);
     else
         score_influence_10x(board, s_owner);
+    s_diff_10x = round_10x_to_half(s_diff_10x);
     find_dead_map(board, s_dead);
     s_on_close = on_close;
     if (!s_window) {
