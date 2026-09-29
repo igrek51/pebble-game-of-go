@@ -30,6 +30,9 @@ extern GameMode game_mode;
 extern int last_move_row;
 extern int last_move_col;
 extern bool last_move_placed;
+// Live territory-estimate overlay on the board (Settings toggle,
+// persisted, default off).
+extern bool terr_estimate_on;
 
 void init_board_logic(void);
 
@@ -37,6 +40,9 @@ void init_board_logic(void);
 // truncate to `keep` plies and rebuild the position by replay.
 void hist_record(int pos);
 int hist_len(void);
+// False after a persisted load or a recording overflow: Undo must refuse.
+bool hist_can_undo(void);
+void hist_mark_incomplete(void);
 void undo_to_len(int keep);
 
 // Snap a 0.1pt score to the nearest possible final margin (komi 7.5
@@ -51,8 +57,9 @@ static inline int round_10x_to_half(int v) {
 // fresh only while (moves_made, consecutive_passes) still match.
 // score_10x and black_pct (Black winrate 0-100) are Black-relative.
 void server_score_set(int score_10x, int black_pct, int for_moves,
-                      int for_passes);
+                      int for_passes, const uint8_t *own_raw);
 bool server_score_fresh(int *s10_out, int *pct_out);
+const int8_t *server_owner_map(void);
 
 // Seconds elapsed since the current AI thinking phase started (0 when not
 // thinking). Implemented in main.c, rendered by the status bar.

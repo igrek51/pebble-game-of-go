@@ -60,10 +60,15 @@ static void comm_inbox_handler(DictionaryIterator *iter, void *context) {
             APP_LOG(APP_LOG_LEVEL_DEBUG, "comm: score msg malformed, ignored");
             return;
         }
-        APP_LOG(APP_LOG_LEVEL_INFO, "comm: GOT SCORE from pkjs: %d (B%d%%, moves=%d passes=%d)",
-                s10, pct, fm, fp);
+        const uint8_t *own = NULL;
+        Tuple *own_tuple = dict_find(iter, 5);
+        if (own_tuple && own_tuple->type == TUPLE_BYTE_ARRAY &&
+            own_tuple->length == BOARD_SIZE * BOARD_SIZE)
+            own = own_tuple->value->data;
+        APP_LOG(APP_LOG_LEVEL_INFO, "comm: GOT SCORE from pkjs: %d (B%d%%, moves=%d passes=%d own=%d)",
+                s10, pct, fm, fp, own ? 1 : 0);
         if (s_score_callback)
-            s_score_callback(s10, pct, fm, fp);
+            s_score_callback(s10, pct, fm, fp, own);
         return;
     }
 

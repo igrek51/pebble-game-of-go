@@ -173,7 +173,15 @@ static void estimate_click_config(Window *window) {
 void estimate_view_show(void (*on_close)(void)) {
     // Tint/dead marks are always local; the number is a fresh server
     // estimate only ("..." while none has arrived for this position).
-    score_influence_10x(board, s_owner);
+    const int8_t *sown = server_owner_map();
+    if (sown) {
+        for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
+            int v = sown[i];
+            s_owner[i] = (uint8_t)((v >= 20) ? BLACK : (v <= -20) ? WHITE : EMPTY);
+        }
+    } else {
+        score_influence_10x(board, s_owner);
+    }
     s_have_server = server_score_fresh(&s_diff_10x, NULL);
     if (s_have_server)
         s_diff_10x = round_10x_to_half(s_diff_10x);

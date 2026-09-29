@@ -4183,7 +4183,7 @@ function sendMoveReply(moveRow, moveCol, isPass) {
 // the watch as a type-2 message. The watch applies it only when its
 // (moves, passes) still match — otherwise it's stale and ignored.
 var KATAGO_SCORE_URL = 'https://katago.igrek.dev/score';
-var KATAGO_SCORE_VISITS = 50;
+var KATAGO_SCORE_VISITS = 30;
 if (typeof process !== 'undefined' && process.env) {
     if (process.env.PEBBLE_SERVER_SCORE_URL)
         KATAGO_SCORE_URL = process.env.PEBBLE_SERVER_SCORE_URL;
@@ -4251,13 +4251,30 @@ function requestServerScore(moveRow, moveCol, isPass) {
                 lead = -lead;
                 win = 1 - win;
             }
-            Pebble.sendAppMessage({
+            var msg = {
                 0: 2,
                 1: Math.round(lead * 10),
                 2: Math.round(win * 100),
                 3: forMoves,
                 4: forPasses
-            }, function() {}, function() {});
+            };
+            // Ownership map for the territory tint (Black-relative -100..100
+            // offset to 0..200 unsigned bytes; watch validates length).
+            if (res.ownership && res.ownership.length === 81) {
+                var own = [];
+                for (var oi = 0; oi < 81; oi++) {
+                    var ov = Math.round(res.ownership[oi] * 100);
+                    if (opp !== BLACK)
+                        ov = -ov;
+                    if (ov < -100)
+                        ov = -100;
+                    if (ov > 100)
+                        ov = 100;
+                    own.push(ov + 100);
+                }
+                msg[5] = own;
+            }
+            Pebble.sendAppMessage(msg, function() {}, function() {});
             console.log('pkjs: server score B' +
                         (lead >= 0 ? '+' : '') + lead.toFixed(1));
         } catch (e) {

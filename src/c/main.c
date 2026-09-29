@@ -32,6 +32,9 @@ static SimpleMenuSection menu_sections[1];
 static Window *s_mode_window = NULL;
 static SimpleMenuLayer *s_mode_layer = NULL;
 static SimpleMenuSection mode_sections[1];
+static Window *s_settings_window = NULL;
+static SimpleMenuLayer *s_settings_layer = NULL;
+static SimpleMenuSection settings_sections[1];
 static Window *s_errmenu_window = NULL;
 static SimpleMenuLayer *s_errmenu_layer = NULL;
 static SimpleMenuSection errmenu_sections[1];
@@ -56,6 +59,7 @@ static void show_menu(void);
 static void hide_menu(void);
 static void show_mode_select(void);
 static void hide_mode_select(void);
+static void show_settings(void);
 
 // ---- persisted game state ----
 // Auto-saved after every move/pass/mode change and on exit; auto-loaded on
@@ -83,6 +87,7 @@ enum {
     PKEY_WHITE_SCORE,
     PKEY_UI_STATE,
     PKEY_KO_ACTIVE,
+    PKEY_TERR_EST,
 };
 
 static void save_game_state(void) {
@@ -101,6 +106,7 @@ static void save_game_state(void) {
     persist_write_int(PKEY_WHITE_SCORE, white_score);
     persist_write_int(PKEY_UI_STATE, ui_state);
     persist_write_int(PKEY_KO_ACTIVE, ko_active ? 1 : 0);
+    persist_write_int(PKEY_TERR_EST, terr_estimate_on ? 1 : 0);
     APP_LOG(APP_LOG_LEVEL_INFO, "game: state saved (moves=%d)", moves_made);
 }
 
@@ -136,11 +142,16 @@ static bool load_game_state(void) {
     ui_state = (UIState)persist_read_int(PKEY_UI_STATE);
     ko_active = persist_exists(PKEY_KO_ACTIVE) &&
                 persist_read_int(PKEY_KO_ACTIVE) != 0;
+    terr_estimate_on = persist_exists(PKEY_TERR_EST) &&
+                       persist_read_int(PKEY_TERR_EST) != 0;
     // A thinking/cursor state means nothing after a restart (any other
     // value, including garbage, lands here too); an AI turn is re-armed
     // by the caller. A finished game is re-shown by the caller.
     if (ui_state != GAME_OVER_STATE)
         ui_state = VIEW;
+    // Loaded stones predate the (empty) move history: Undo must refuse
+    // until a new game starts recording from scratch.
+    hist_mark_incomplete();
     APP_LOG(APP_LOG_LEVEL_INFO,
             "game: state loaded (moves=%d, player=%d, mode=%d)", moves_made,
             current_player, game_mode);
@@ -243,11 +254,13 @@ static void think_timer_stop(void) {
 // last ply only. PvP: retract one ply. after_move_played re-arms the AI
 // when the restored turn belongs to it.
 static void do_undo_ui(void) {
-    int n = hist_len();
-    if (n <= 0) {
-        show_error_dialog("Nothing to undo");
+    // No full history (loaded game, overflow): replay would wipe stones
+    // that predate it, so refuse instead of corrupting the board.
+    if (!hist_can_undo()) {
+        show_error_dialog("Undo unavailable");
         return;
     }
+    int n = hist_len();
     int keep;
     if (ui_state == AI_THINKING || next_is_ai_turn()) {
         comm_cancel();
@@ -696,6 +709,10 @@ static void menu_select_callback(int index, void *context) {
         hide_menu();
         logs_view_show();
         return;
+    } else if (index == 8) {
+        hide_menu();
+        show_settings();
+        return;
     }
     hide_menu();
     layer_mark_dirty(s_canvas_layer);
@@ -704,7 +721,7 @@ static void menu_select_callback(int index, void *context) {
 static void show_menu(void) {
     if (!s_menu_window) {
         s_menu_window = window_create();
-        static SimpleMenuItem items[8];
+        static SimpleMenuItem items[9];
         items[0] =
             (SimpleMenuItem){.title = "EXIT", .callback = menu_select_callback};
         items[1] =
@@ -721,7 +738,9 @@ static void show_menu(void) {
                                     .callback = menu_select_callback};
         items[7] =
             (SimpleMenuItem){.title = "LOGS", .callback = menu_select_callback};
-        menu_sections[0] = (SimpleMenuSection){.num_items = 8, .items = items};
+        items[8] =
+            (SimpleMenuItem){.title = "SETTINGS", .callback = menu_select_callback};
+        menu_sections[0] = (SimpleMenuSection){.num_items = 9, .items = items};
         s_menu_layer = simple_menu_layer_create(
             layer_get_bounds(window_get_root_layer(s_menu_window)),
             s_menu_window, menu_sections, 1, NULL);
@@ -815,6 +834,44 @@ static void hide_mode_select(void) {
         window_stack_remove(s_mode_window, true);
 }
 
+// Settings submenu: currently just the territory-estimate toggle.
+// Title refreshes on every open; the toggle persists and repaints.
+static char s_terr_title[28];
+
+static void settings_select_callback(int index, void *context) {
+    (void)context;
+    if (index != 0)
+        return;
+    terr_estimate_on = !terr_estimate_on;
+    save_game_state();
+    snprintf(s_terr_title, sizeof(s_terr_title), "Territory Estimate: %s",
+             terr_estimate_on ? "ON" : "OFF");
+    if (s_settings_layer)
+        layer_mark_dirty(
+            simple_menu_layer_get_layer(s_settings_layer));
+    if (s_canvas_layer)
+        layer_mark_dirty(s_canvas_layer);
+}
+
+static void show_settings(void) {
+    snprintf(s_terr_title, sizeof(s_terr_title), "Territory Estimate: %s",
+             terr_estimate_on ? "ON" : "OFF");
+    if (!s_settings_window) {
+        s_settings_window = window_create();
+        static SimpleMenuItem items[1];
+        items[0] = (SimpleMenuItem){.title = s_terr_title,
+                                    .callback = settings_select_callback};
+        settings_sections[0] =
+            (SimpleMenuSection){.num_items = 1, .items = items};
+        s_settings_layer = simple_menu_layer_create(
+            layer_get_bounds(window_get_root_layer(s_settings_window)),
+            s_settings_window, settings_sections, 1, NULL);
+        layer_add_child(window_get_root_layer(s_settings_window),
+                        simple_menu_layer_get_layer(s_settings_layer));
+    }
+    window_stack_push(s_settings_window, true);
+}
+
 static void window_load(Window *window) {
     s_canvas_layer =
         layer_create(layer_get_bounds(window_get_root_layer(window)));
@@ -831,12 +888,12 @@ static void window_unload(Window *window) { layer_destroy(s_canvas_layer); }
 // banner/overlay if still fresh. Stale estimates (user already moved)
 // are ignored by the freshness check at render time.
 static void on_server_score(int score_10x, int black_pct, int for_moves,
-                            int for_passes) {
+                            int for_passes, const uint8_t *ownership) {
     int a10 = score_10x < 0 ? -score_10x : score_10x;
     APP_LOG(APP_LOG_LEVEL_INFO, "game: server score B%c%d.%d B%d%% (moves=%d passes=%d)",
             score_10x >= 0 ? '+' : '-', a10 / 10, a10 % 10, black_pct,
             for_moves, for_passes);
-    server_score_set(score_10x, black_pct, for_moves, for_passes);
+    server_score_set(score_10x, black_pct, for_moves, for_passes, ownership);
     estimate_view_refresh_score();
     if (s_canvas_layer)
         layer_mark_dirty(s_canvas_layer);

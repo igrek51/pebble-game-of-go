@@ -2,6 +2,7 @@
 #include "../ai/mcts.h"
 #include "../game_state.h"
 #include "../logic/board.h"
+#include "../logic/life.h"
 #include <pebble.h>
 
 void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
@@ -36,6 +37,9 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
     // The thinking label keeps its live seconds; overflow ellipsizes exactly
     // like the regular turn label does.
     bool thinking = (ui_state == AI_THINKING);
+    // Wide score slot only with the territory overlay (for the winrate);
+    // otherwise the classic 60px slot.
+    int score_w = (terr_estimate_on && ui_state != GAME_OVER_STATE) ? 100 : 60;
     if (thinking) {
         // Full "White thinking 5s" needs ~130px at 18pt, so the label rect
         // is widened (for every state — one system) and the score rect
@@ -56,7 +60,7 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
     }
     graphics_draw_text(ctx, left_text,
                        fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                       GRect(5, 0, 135, 20),
+                       GRect(5, 0, width - score_w - 15, 20),
                        GTextOverflowModeTrailingEllipsis,
                        GTextAlignmentLeft, NULL);
 
@@ -69,19 +73,28 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
                  (diff_10x >= 0 ? 'B' : 'W'), abs_diff_10x / 10);
     } else {
         // Fresh server estimate (KataGo /score) outranks the local
-        // influence heuristic; stale/missing falls back to it.
-        int diff_10x;
-        if (!server_score_fresh(&diff_10x, NULL))
+        // influence heuristic; stale/missing falls back to it. With the
+        // territory overlay on, a fresh estimate also shows Black's
+        // winrate in a widened score slot.
+        int diff_10x, pct = -1;
+        bool fresh = server_score_fresh(&diff_10x, &pct);
+        if (!fresh)
             diff_10x = estimate_score_10x_logic();
         diff_10x = round_10x_to_half(diff_10x);
         int abs_diff_10x = diff_10x < 0 ? -diff_10x : diff_10x;
-        snprintf(right_text, sizeof(right_text), "B%c%d.%d",
-                 (diff_10x >= 0 ? '+' : '-'), abs_diff_10x / 10,
-                 abs_diff_10x % 10);
+        if (terr_estimate_on && fresh) {
+            snprintf(right_text, sizeof(right_text), "B%c%d.%d(%d%%)",
+                     (diff_10x >= 0 ? '+' : '-'), abs_diff_10x / 10,
+                     abs_diff_10x % 10, pct);
+        } else {
+            snprintf(right_text, sizeof(right_text), "B%c%d.%d",
+                     (diff_10x >= 0 ? '+' : '-'), abs_diff_10x / 10,
+                     abs_diff_10x % 10);
+        }
     }
     graphics_draw_text(ctx, right_text,
                        fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                        GRect(width - 65, 0, 60, 20), GTextOverflowModeWordWrap,
+                        GRect(width - score_w - 5, 0, score_w, 20), GTextOverflowModeWordWrap,
                        GTextAlignmentRight, NULL);
 
     // Board background
@@ -180,6 +193,46 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
             graphics_fill_circle(ctx, p, STONE_RADIUS);
             if (stone == WHITE)
                 graphics_draw_circle(ctx, p, STONE_RADIUS);
+        }
+    }
+
+    // Live territory overlay (Settings toggle): tint estimated territory
+    // and mark dead stones, same maps as the ESTIMATE view. The tint
+    // prefers the server ownership map when fresh, else local influence.
+    if (terr_estimate_on) {
+        uint8_t owner[BOARD_SIZE * BOARD_SIZE];
+        bool dead[BOARD_SIZE * BOARD_SIZE];
+        const int8_t *sown = server_owner_map();
+        if (sown) {
+            for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
+                int v = sown[i];
+                owner[i] = (v >= 20) ? BLACK : (v <= -20) ? WHITE : EMPTY;
+            }
+        } else {
+            score_influence_10x(board, owner);
+        }
+        find_dead_map(board, dead);
+        for (int row = 0; row < BOARD_SIZE; row++) {
+            for (int col = 0; col < BOARD_SIZE; col++) {
+                int idx = board_index(row, col);
+                GPoint p = GPoint(BOARD_ORIGIN_X + col * CELL_SIZE,
+                                  BOARD_ORIGIN_Y + row * CELL_SIZE);
+                if (board[idx] == EMPTY &&
+                    (owner[idx] == BLACK || owner[idx] == WHITE)) {
+                    graphics_context_set_fill_color(
+                        ctx, (owner[idx] == BLACK) ? COLOR_BLACK_STONE
+                                                  : COLOR_WHITE_STONE);
+                    graphics_fill_rect(ctx, GRect(p.x - 2, p.y - 2, 5, 5),
+                                       0, GCornerNone);
+                } else if ((board[idx] == BLACK || board[idx] == WHITE) &&
+                           dead[idx]) {
+                    graphics_context_set_stroke_color(
+                        ctx, (board[idx] == BLACK) ? COLOR_WHITE_STONE
+                                                  : COLOR_BLACK_STONE);
+                    graphics_draw_rect(ctx, GRect(p.x - 5, p.y - 5, 11, 11));
+                    graphics_draw_rect(ctx, GRect(p.x - 4, p.y - 4, 9, 9));
+                }
+            }
         }
     }
 

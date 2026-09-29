@@ -13,11 +13,16 @@ int server_score_10x = 0;
 int server_score_pct = 50;
 int server_score_moves = -1;
 int server_score_passes = -1;
+// Ownership map from /score: Black-relative -100..100 per point, valid
+// only together with the score above (same freshness keys).
+static int8_t server_own[BOARD_SIZE * BOARD_SIZE];
+static bool server_own_valid = false;
 UIState ui_state = VIEW;
 GameMode game_mode = MODE_WHITE_AI;
 int last_move_row = 4;
 int last_move_col = 4;
 bool last_move_placed = false;
+bool terr_estimate_on = false;
 
 // Move history for Undo: 0-80 stone position, -1 pass. Stones recorded
 // on placement, passes on pass. NOT persisted (a reloaded game starts
@@ -26,14 +31,30 @@ bool last_move_placed = false;
 #define MOVE_HIST_MAX 300
 static int8_t move_hist[MOVE_HIST_MAX];
 static int move_hist_len = 0;
+// True only when the history covers the whole game from the empty board.
+// False after loading a persisted game (stones predate the history) or
+// after a recording overflow: replay would resurrect a wrong position,
+// so Undo refuses instead of corrupting the board.
+static bool hist_complete = true;
 
 void hist_record(int pos) {
-    if (move_hist_len < MOVE_HIST_MAX)
+    if (move_hist_len < MOVE_HIST_MAX) {
         move_hist[move_hist_len++] = (int8_t)pos;
+    } else {
+        hist_complete = false;
+    }
 }
 
 int hist_len(void) {
     return move_hist_len;
+}
+
+bool hist_can_undo(void) {
+    return hist_complete && move_hist_len > 0;
+}
+
+void hist_mark_incomplete(void) {
+    hist_complete = false;
 }
 
 void undo_to_len(int keep) {
@@ -103,6 +124,7 @@ void init_board_logic(void) {
     last_move_col = 4;
     last_move_placed = false;
     move_hist_len = 0;
+    hist_complete = true;
     server_score_10x = 0;
     server_score_pct = 50;
     server_score_moves = -1;
@@ -110,11 +132,18 @@ void init_board_logic(void) {
 }
 
 void server_score_set(int score_10x, int black_pct, int for_moves,
-                      int for_passes) {
+                      int for_passes, const uint8_t *own_raw) {
     server_score_10x = score_10x;
     server_score_pct = black_pct;
     server_score_moves = for_moves;
     server_score_passes = for_passes;
+    if (own_raw) {
+        for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++)
+            server_own[i] = (int8_t)(own_raw[i] - 100);
+        server_own_valid = true;
+    } else {
+        server_own_valid = false;
+    }
 }
 
 bool server_score_fresh(int *s10_out, int *pct_out) {
@@ -127,4 +156,13 @@ bool server_score_fresh(int *s10_out, int *pct_out) {
         return true;
     }
     return false;
+}
+
+// Server ownership map (Black-relative -100..100), or NULL when absent
+// or stale. Callers threshold it (|v|>=20 owned) for tinting.
+const int8_t *server_owner_map(void) {
+    if (server_own_valid && server_score_moves == moves_made &&
+        server_score_passes == consecutive_passes)
+        return server_own;
+    return NULL;
 }

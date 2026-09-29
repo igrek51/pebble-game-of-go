@@ -10,9 +10,11 @@
 typedef void (*comm_ai_move_callback)(int row, int col, int is_pass);
 
 // Server score estimate (type-2 message, arrives after the move reply):
-// Black-relative score in 0.1pt units, Black winrate 0-100, and the
-// (moves_made, consecutive_passes) the estimate was computed for.
-typedef void (*comm_score_callback)(int score_10x, int black_pct, int for_moves, int for_passes);
+// Black-relative score in 0.1pt units, Black winrate 0-100, the
+// (moves_made, consecutive_passes) the estimate was computed for, and the
+// ownership map (81 bytes, 0..200 offset = Black-relative -100..100) or
+// NULL when absent.
+typedef void (*comm_score_callback)(int score_10x, int black_pct, int for_moves, int for_passes, const uint8_t *ownership);
 
 void comm_init(void);
 bool comm_is_connected(void);
