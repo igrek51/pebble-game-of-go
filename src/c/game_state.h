@@ -33,6 +33,12 @@ extern bool last_move_placed;
 
 void init_board_logic(void);
 
+// Undo history: record stone positions (row*9+col) and passes (-1);
+// truncate to `keep` plies and rebuild the position by replay.
+void hist_record(int pos);
+int hist_len(void);
+void undo_to_len(int keep);
+
 // Snap a 0.1pt score to the nearest possible final margin (komi 7.5
 // makes exact results always n+0.5): 54->55, 59->55, 61->65, -4->-5.
 static inline int round_10x_to_half(int v) {

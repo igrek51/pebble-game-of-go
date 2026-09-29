@@ -235,10 +235,48 @@ static void think_timer_stop(void) {
     s_ai_think_color = EMPTY;
 }
 
+// Undo: rebuild the position from the move history minus the retracted
+// plies, then reset everything a fresh move would (AI epoch retires
+// stray replies, pending requests/timers cancelled, state saved).
+// vs AI, human to move: retract the full round (AI + human). AI to move
+// (incl. thinking on the human's just-played stone): retract the human's
+// last ply only. PvP: retract one ply. after_move_played re-arms the AI
+// when the restored turn belongs to it.
+static void do_undo_ui(void) {
+    int n = hist_len();
+    if (n <= 0) {
+        show_error_dialog("Nothing to undo");
+        return;
+    }
+    int keep;
+    if (ui_state == AI_THINKING || next_is_ai_turn()) {
+        comm_cancel();
+        if (ai_move_timer) {
+            app_timer_cancel(ai_move_timer);
+            ai_move_timer = NULL;
+        }
+        keep = n - 1;
+    } else if (game_mode == MODE_PVP) {
+        keep = n - 1;
+    } else {
+        keep = n - 2;
+        if (keep < 0)
+            keep = 0;
+    }
+    undo_to_len(keep);
+    ui_state = VIEW;
+    s_ai_epoch++;
+    comm_cancel();
+    save_game_state();
+    vibes_short_pulse();
+    after_move_played();
+}
+
 static void do_pass_ui(void) {
     consecutive_passes++;
     ko_active = false;
     last_move_placed = false;
+    hist_record(-1);
     // A pass during AI thinking (via the menu) retires the pending request:
     // its late reply must not play afterward.
     s_ai_epoch++;
@@ -308,6 +346,7 @@ static bool try_place_stone_ui(int row, int col) {
     last_move_placed = true;
     consecutive_passes = 0;
     current_player = opponent;
+    hist_record(row * BOARD_SIZE + col);
     ui_state = VIEW;
     s_ai_epoch++; // a placed stone retires any pending AI reply
     comm_cancel();
@@ -652,6 +691,11 @@ static void menu_select_callback(int index, void *context) {
         hide_menu();
         logs_view_show();
         return;
+    } else if (index == 7) {
+        hide_menu();
+        do_undo_ui();
+        layer_mark_dirty(s_canvas_layer);
+        return;
     }
     hide_menu();
     layer_mark_dirty(s_canvas_layer);
@@ -660,7 +704,7 @@ static void menu_select_callback(int index, void *context) {
 static void show_menu(void) {
     if (!s_menu_window) {
         s_menu_window = window_create();
-        static SimpleMenuItem items[7];
+        static SimpleMenuItem items[8];
         items[0] =
             (SimpleMenuItem){.title = "EXIT", .callback = menu_select_callback};
         items[1] =
@@ -675,7 +719,9 @@ static void show_menu(void) {
                                     .callback = menu_select_callback};
         items[6] =
             (SimpleMenuItem){.title = "LOGS", .callback = menu_select_callback};
-        menu_sections[0] = (SimpleMenuSection){.num_items = 7, .items = items};
+        items[7] =
+            (SimpleMenuItem){.title = "UNDO", .callback = menu_select_callback};
+        menu_sections[0] = (SimpleMenuSection){.num_items = 8, .items = items};
         s_menu_layer = simple_menu_layer_create(
             layer_get_bounds(window_get_root_layer(s_menu_window)),
             s_menu_window, menu_sections, 1, NULL);
@@ -791,6 +837,7 @@ static void on_server_score(int score_10x, int black_pct, int for_moves,
             score_10x >= 0 ? '+' : '-', a10 / 10, a10 % 10, black_pct,
             for_moves, for_passes);
     server_score_set(score_10x, black_pct, for_moves, for_passes);
+    estimate_view_refresh_score();
     if (s_canvas_layer)
         layer_mark_dirty(s_canvas_layer);
 }

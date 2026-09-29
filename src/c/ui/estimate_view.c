@@ -14,6 +14,10 @@ static void (*s_on_close)(void) = NULL;
 static uint8_t s_owner[BOARD_SIZE * BOARD_SIZE];
 static bool s_dead[BOARD_SIZE * BOARD_SIZE];
 static int s_diff_10x = 0;
+// True when the shown number is a fresh server estimate; otherwise "..."
+// is drawn instead of a stale/local number (tint/dead marks stay local).
+static bool s_have_server = false;
+static bool s_open = false;
 
 static void estimate_update_proc(Layer *layer, GContext *ctx) {
     GRect bounds = layer_get_bounds(layer);
@@ -47,10 +51,15 @@ static void estimate_update_proc(Layer *layer, GContext *ctx) {
                            GRect(5, 0, 110, 20), GTextOverflowModeWordWrap,
                            GTextAlignmentLeft, NULL);
     }
-    int abs_diff = s_diff_10x < 0 ? -s_diff_10x : s_diff_10x;
+    int abs_diff = 0;
     char score[16];
-    snprintf(score, sizeof(score), "B%c%d.%d", (s_diff_10x >= 0 ? '+' : '-'),
-             abs_diff / 10, abs_diff % 10);
+    if (s_have_server) {
+        abs_diff = s_diff_10x < 0 ? -s_diff_10x : s_diff_10x;
+        snprintf(score, sizeof(score), "B%c%d.%d", (s_diff_10x >= 0 ? '+' : '-'),
+                 abs_diff / 10, abs_diff % 10);
+    } else {
+        snprintf(score, sizeof(score), "...");
+    }
     graphics_draw_text(ctx, score,
                        fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
                        GRect(width - 80, 0, 75, 20), GTextOverflowModeWordWrap,
@@ -162,16 +171,14 @@ static void estimate_click_config(Window *window) {
 }
 
 void estimate_view_show(void (*on_close)(void)) {
-    // One shared influence map drives both the tint and the number, so the
-    // view always agrees with itself 1:1. Dead marks come from the same
-    // removal underneath. A fresh server estimate replaces the number only
-    // (tint stays local).
-    if (!server_score_fresh(&s_diff_10x, NULL))
-        s_diff_10x = score_influence_10x(board, s_owner);
-    else
-        score_influence_10x(board, s_owner);
-    s_diff_10x = round_10x_to_half(s_diff_10x);
+    // Tint/dead marks are always local; the number is a fresh server
+    // estimate only ("..." while none has arrived for this position).
+    score_influence_10x(board, s_owner);
+    s_have_server = server_score_fresh(&s_diff_10x, NULL);
+    if (s_have_server)
+        s_diff_10x = round_10x_to_half(s_diff_10x);
     find_dead_map(board, s_dead);
+    s_open = true;
     s_on_close = on_close;
     if (!s_window) {
         s_window = window_create();
@@ -187,6 +194,19 @@ void estimate_view_show(void (*on_close)(void)) {
 }
 
 void estimate_view_hide(void) {
+    s_open = false;
     if (s_window)
         window_stack_remove(s_window, true);
+}
+
+bool estimate_view_refresh_score(void) {
+    if (!s_open || s_have_server)
+        return false;
+    if (!server_score_fresh(&s_diff_10x, NULL))
+        return false;
+    s_diff_10x = round_10x_to_half(s_diff_10x);
+    s_have_server = true;
+    if (s_layer)
+        layer_mark_dirty(s_layer);
+    return true;
 }
