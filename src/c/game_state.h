@@ -66,6 +66,24 @@ static inline int round_10x_to_half(int v) {
     return r * 10 + 5;
 }
 
+// Server ownership (-100..100, Black-relative) helpers for tinting:
+// |v|>=20 counts as owned; a stone is estimated dead only when its point
+// is confidently the opponent's (|v|>=60), so live stones in contested
+// areas are never marked.
+#define SERVER_OWN_TINT 20
+#define SERVER_OWN_DEAD 60
+static inline uint8_t server_owner_color(int v) {
+    if (v >= SERVER_OWN_TINT)
+        return BLACK;
+    if (v <= -SERVER_OWN_TINT)
+        return WHITE;
+    return EMPTY;
+}
+static inline bool server_stone_dead(int v, uint8_t stone) {
+    return (stone == BLACK && v <= -SERVER_OWN_DEAD) ||
+           (stone == WHITE && v >= SERVER_OWN_DEAD);
+}
+
 // Server score estimate (type-2 message from pkjs): set on arrival,
 // fresh only while (moves_made, consecutive_passes) still match.
 // score_10x and black_pct (Black winrate 0-100) are Black-relative.

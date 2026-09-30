@@ -128,7 +128,8 @@ static void estimate_update_proc(Layer *layer, GContext *ctx) {
         }
     }
 
-    // Dead marks: hollow squares in the opposite color on dead stones.
+    // Dead marks: same small filled squares as the territory tint, in
+    // the opposite color (no clash: tint only sits on empty points).
     for (int row = 0; row < BOARD_SIZE; row++) {
         for (int col = 0; col < BOARD_SIZE; col++) {
             int idx = board_index(row, col);
@@ -139,11 +140,11 @@ static void estimate_update_proc(Layer *layer, GContext *ctx) {
                 continue;
             GPoint p = GPoint(BOARD_ORIGIN_X + col * CELL_SIZE,
                               BOARD_ORIGIN_Y + row * CELL_SIZE);
-            graphics_context_set_stroke_color(
+            graphics_context_set_fill_color(
                 ctx, (stone == BLACK) ? COLOR_WHITE_STONE
                                       : COLOR_BLACK_STONE);
-            graphics_draw_rect(ctx, GRect(p.x - 5, p.y - 5, 11, 11));
-            graphics_draw_rect(ctx, GRect(p.x - 4, p.y - 4, 9, 9));
+            graphics_fill_rect(ctx, GRect(p.x - 2, p.y - 2, 5, 5),
+                               0, GCornerNone);
         }
     }
 }
@@ -174,30 +175,38 @@ static void estimate_click_config(Window *window) {
 }
 
 void estimate_view_show(void (*on_close)(void)) {
-    // Tint/dead marks are always local. The number: local heuristic in
-    // MCTS mode (always shown); a fresh server estimate in Katago mode
-    // ("..." while none has arrived for this position).
+    // The number: local heuristic in MCTS mode (always shown); a fresh
+    // server estimate in Katago mode ("..." while none has arrived for
+    // this position). Tint/dead marks follow the same rule: local in
+    // MCTS mode, server-only in Katago mode (cleared while loading).
     if (ai_engine == AI_ENGINE_MCTS) {
         score_influence_10x(board, s_owner);
         s_diff_10x = round_10x_to_half(s_diff_10x);
         s_have_server = false;
         s_show_local = true;
+        find_dead_map(board, s_dead);
     } else {
         const int8_t *sown = server_owner_map();
         if (sown) {
+            for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++)
+                s_owner[i] = server_owner_color(sown[i]);
+            s_have_server = server_score_fresh(&s_diff_10x, NULL);
+            if (s_have_server)
+                s_diff_10x = round_10x_to_half(s_diff_10x);
+            s_show_local = false;
+            find_dead_map(board, s_dead);
             for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
-                int v = sown[i];
-                s_owner[i] = (uint8_t)((v >= 20) ? BLACK : (v <= -20) ? WHITE : EMPTY);
+                uint8_t stone = get_stone(i / BOARD_SIZE, i % BOARD_SIZE);
+                if (stone != EMPTY && server_stone_dead(sown[i], stone))
+                    s_dead[i] = true;
             }
         } else {
-            score_influence_10x(board, s_owner);
+            memset(s_owner, EMPTY, sizeof(s_owner));
+            memset(s_dead, 0, sizeof(s_dead));
+            s_have_server = false;
+            s_show_local = false;
         }
-        s_have_server = server_score_fresh(&s_diff_10x, NULL);
-        if (s_have_server)
-            s_diff_10x = round_10x_to_half(s_diff_10x);
-        s_show_local = false;
     }
-    find_dead_map(board, s_dead);
     s_open = true;
     s_on_close = on_close;
     if (!s_window) {
@@ -226,6 +235,18 @@ bool estimate_view_refresh_score(void) {
         return false;
     s_diff_10x = round_10x_to_half(s_diff_10x);
     s_have_server = true;
+    // Fill the tint/dead marks too (the view opened with them cleared).
+    const int8_t *sown = server_owner_map();
+    if (sown) {
+        for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++)
+            s_owner[i] = server_owner_color(sown[i]);
+        find_dead_map(board, s_dead);
+        for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
+            uint8_t stone = get_stone(i / BOARD_SIZE, i % BOARD_SIZE);
+            if (stone != EMPTY && server_stone_dead(sown[i], stone))
+                s_dead[i] = true;
+        }
+    }
     if (s_layer)
         layer_mark_dirty(s_layer);
     return true;

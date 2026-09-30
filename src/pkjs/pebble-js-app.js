@@ -4184,6 +4184,7 @@ function sendMoveReply(moveRow, moveCol, isPass) {
 // (moves, passes) still match — otherwise it's stale and ignored.
 var KATAGO_SCORE_URL = 'https://katago.igrek.dev/score';
 var KATAGO_SCORE_VISITS = 30;
+var KATAGO_SCORE_RETRIES = 2;
 if (typeof process !== 'undefined' && process.env) {
     if (process.env.PEBBLE_SERVER_SCORE_URL)
         KATAGO_SCORE_URL = process.env.PEBBLE_SERVER_SCORE_URL;
@@ -4218,9 +4219,50 @@ function requestServerScore(moveRow, moveCol, isPass) {
         else if (srvScoreBoard[i] === WHITE)
             wStones.push(rcToGtp(r, c));
     }
+    fetchScoreEstimate(bStones, wStones, opp === BLACK ? 'B' : 'W',
+                       forMoves, forPasses);
+}
+
+// On-demand score (ESTIMATE action, type 3): score the transmitted
+// position as it stands — no post-move simulation, the side to move is
+// the position's current player. Payload keys mirror the move request:
+// 1=current player, 4=passes, 7=moves, 5=board[81], 6=ko[81]+flag.
+function handleScoreDemand(payload) {
+    var player = payload ? payload[1] | 0 : 0;
+    var passes = payload ? payload[4] | 0 : 0;
+    var moves = payload ? payload[7] | 0 : 0;
+    if (player !== BLACK && player !== WHITE) {
+        console.log('pkjs: score demand with bad player, ignoring');
+        return;
+    }
+    var bd = new Array(BOARD_SIZE * BOARD_SIZE);
+    if (!copyBytesFromPayload(payload[5], 81, bd)) {
+        console.log('pkjs: score demand with bad board, ignoring');
+        return;
+    }
+    var bStones = [], wStones = [];
+    for (var i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
+        var r = Math.floor(i / BOARD_SIZE), c = i % BOARD_SIZE;
+        if (bd[i] === BLACK)
+            bStones.push(rcToGtp(r, c));
+        else if (bd[i] === WHITE)
+            wStones.push(rcToGtp(r, c));
+    }
+    console.log('pkjs: on-demand score (moves=' + moves + ' passes=' + passes + ')');
+    fetchScoreEstimate(bStones, wStones, player === BLACK ? 'B' : 'W',
+                       moves, passes);
+}
+
+// Shared /score fetch: POSTs stones, pushes the Black-relative estimate
+// as a type-2 message. Fire-and-forget with timeout + bounded retries;
+// silently skips while one is already in flight.
+function fetchScoreEstimate(bStones, wStones, toMove, forMoves, forPasses) {    if (!KATAGO_SCORE_URL || typeof XMLHttpRequest === 'undefined' ||
+        scorePending)
+        return;
+    var opp = (toMove === 'B') ? BLACK : WHITE;
     var body = JSON.stringify({
         stones: { B: bStones, W: wStones },
-        toMove: opp === BLACK ? 'B' : 'W',
+        toMove: toMove,
         visits: KATAGO_SCORE_VISITS
     });
     var xhr;
@@ -4233,59 +4275,121 @@ function requestServerScore(moveRow, moveCol, isPass) {
     } catch (e) {
         return;
     }
+    // Attempts with timeout + retry: a hung socket that never settles
+    // readyState must not wedge scorePending forever (that silently kills
+    // every later estimate). Up to 1 + KATAGO_SCORE_RETRIES tries.
     scorePending = true;
-    xhr.onreadystatechange = function() {
-        if (!xhr || xhr.readyState !== 4)
+    var attempts = 0;
+    var finished = false;
+    var giveUp = function(why) {
+        if (finished)
             return;
+        finished = true;
         scorePending = false;
-        try {
-            if (xhr.status !== 200)
-                return;
-            var res = JSON.parse(xhr.responseText);
-            var lead = res.scoreLead, win = res.winrate;
-            if (typeof lead !== 'number' || typeof win !== 'number')
-                return;
-            // Server numbers are side-to-move (opponent) perspective;
-            // the watch banner is Black-relative.
-            if (opp !== BLACK) {
-                lead = -lead;
-                win = 1 - win;
-            }
-            var msg = {
-                0: 2,
-                1: Math.round(lead * 10),
-                2: Math.round(win * 100),
-                3: forMoves,
-                4: forPasses
-            };
-            // Ownership map for the territory tint (Black-relative -100..100
-            // offset to 0..200 unsigned bytes; watch validates length).
-            if (res.ownership && res.ownership.length === 81) {
-                var own = [];
-                for (var oi = 0; oi < 81; oi++) {
-                    var ov = Math.round(res.ownership[oi] * 100);
-                    if (opp !== BLACK)
-                        ov = -ov;
-                    if (ov < -100)
-                        ov = -100;
-                    if (ov > 100)
-                        ov = 100;
-                    own.push(ov + 100);
-                }
-                msg[5] = own;
-            }
-            Pebble.sendAppMessage(msg, function() {}, function() {});
-            console.log('pkjs: server score B' +
-                        (lead >= 0 ? '+' : '') + lead.toFixed(1));
-        } catch (e) {
-            console.log('pkjs: server score failed: ' + (e && e.message));
+        console.log('pkjs: server score giving up (' + why + ')');
+    };
+    var retryOrGiveUp = function(why) {
+        if (finished)
+            return;
+        if (attempts <= KATAGO_SCORE_RETRIES) {
+            console.log('pkjs: server score retry ' + attempts + '/' +
+                        KATAGO_SCORE_RETRIES + ' (' + why + ')');
+            sendAttempt();
+        } else {
+            giveUp(why);
         }
     };
-    try {
-        xhr.send(body);
-    } catch (e) {
-        scorePending = false;
-    }
+    var sendAttempt = function() {
+        attempts++;
+        var axhr;
+        try {
+            axhr = new XMLHttpRequest();
+            axhr.open('POST', KATAGO_SCORE_URL, true);
+            try {
+                axhr.timeout = KATAGO_TIMEOUT_MS;
+            } catch (e) {}
+        } catch (e) {
+            retryOrGiveUp('open failed');
+            return;
+        }
+        // One terminal event per attempt: timeout/error callbacks may be
+        // followed by a readyState-4 with status 0 for the same failure.
+        var settled = false;
+        axhr.onreadystatechange = function() {
+            if (!axhr || axhr.readyState !== 4 || settled || finished)
+                return;
+            settled = true;
+            if (axhr.status !== 200) {
+                retryOrGiveUp('http ' + axhr.status);
+                return;
+            }
+            try {
+                var res = JSON.parse(axhr.responseText);
+                var lead = res.scoreLead, win = res.winrate;
+                if (typeof lead !== 'number' || typeof win !== 'number')
+                    throw new Error('bad score body');
+                // Server numbers are side-to-move (opponent) perspective;
+                // the watch banner is Black-relative.
+                if (opp !== BLACK) {
+                    lead = -lead;
+                    win = 1 - win;
+                }
+                var msg = {
+                    0: 2,
+                    1: Math.round(lead * 10),
+                    2: Math.round(win * 100),
+                    3: forMoves,
+                    4: forPasses
+                };
+                // Ownership map for the territory tint (Black-relative
+                // -100..100 offset to 0..200 unsigned bytes; the watch
+                // validates length).
+                if (res.ownership && res.ownership.length === 81) {
+                    var own = [];
+                    for (var oi = 0; oi < 81; oi++) {
+                        var ov = Math.round(res.ownership[oi] * 100);
+                        if (opp !== BLACK)
+                            ov = -ov;
+                        if (ov < -100)
+                            ov = -100;
+                        if (ov > 100)
+                            ov = 100;
+                        own.push(ov + 100);
+                    }
+                    msg[5] = own;
+                }
+                Pebble.sendAppMessage(msg, function() {}, function() {});
+                console.log('pkjs: server score B' +
+                            (lead >= 0 ? '+' : '') + lead.toFixed(1));
+            } catch (e) {
+                retryOrGiveUp('bad response');
+                return;
+            }
+            finished = true;
+            scorePending = false;
+        };
+        axhr.ontimeout = function() {
+            if (!settled && !finished) {
+                settled = true;
+                retryOrGiveUp('timeout');
+            }
+        };
+        axhr.onerror = function() {
+            if (!settled && !finished) {
+                settled = true;
+                retryOrGiveUp('error');
+            }
+        };
+        try {
+            axhr.send(body);
+        } catch (e) {
+            if (!settled && !finished) {
+                settled = true;
+                retryOrGiveUp('send failed');
+            }
+        }
+    };
+    sendAttempt();
 }
 
 // Copy a byte-array payload (Uint8Array, ArrayBuffer, or plain Array) into
@@ -4475,6 +4579,13 @@ function handleAiRequest(payload) {
     ponderOn = false;
     var type = payload ? payload[0] : undefined;
     console.log('pkjs: appmessage received, type=' + type);
+    // On-demand score estimate (ESTIMATE action): score the sent position
+    // as it stands. No reply on failure — the overlay keeps "..." and the
+    // user retries by reopening it.
+    if (type === 3) {
+        handleScoreDemand(payload);
+        return;
+    }
     if (type !== 0) {
         console.log('pkjs: ignoring type=' + type);
         return;

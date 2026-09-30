@@ -671,6 +671,12 @@ static void menu_select_callback(int index, void *context) {
     } else if (index == 3) {
         pause_ai_for_estimate();
         hide_menu();
+        // Fresh demand in Katago mode: opening ESTIMATE retries the score
+        // after a network error (the overlay shows "..." meanwhile and
+        // fills in on arrival). MCTS mode needs nothing (local number).
+        if (ai_engine == AI_ENGINE_KATAGO)
+            comm_request_score_estimate(current_player, consecutive_passes,
+                                        moves_made);
         estimate_view_show(resume_ai_after_estimate);
         return;
     } else if (index == 4) {

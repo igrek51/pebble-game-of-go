@@ -76,22 +76,27 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
                  (diff_10x >= 0 ? 'B' : 'W'), abs_diff_10x / 10);
     } else {
         // Fresh server estimate (KataGo /score) outranks the local
-        // influence heuristic; stale/missing falls back to it. A fresh
-        // estimate always shows Black's winrate alongside the score.
+        // influence heuristic; stale/missing falls back to it — except in
+        // Katago mode, where a missing estimate shows "..." instead of a
+        // local guess. A fresh estimate always shows Black's winrate too.
         int diff_10x, pct = -1;
         bool fresh = server_score_fresh(&diff_10x, &pct);
-        if (!fresh)
-            diff_10x = estimate_score_10x_logic();
-        diff_10x = round_10x_to_half(diff_10x);
-        int abs_diff_10x = diff_10x < 0 ? -diff_10x : diff_10x;
-        if (fresh) {
-            snprintf(right_text, sizeof(right_text), "B%c%d.%d(%d%%)",
-                     (diff_10x >= 0 ? '+' : '-'), abs_diff_10x / 10,
-                     abs_diff_10x % 10, pct);
+        if (ai_engine == AI_ENGINE_KATAGO && !fresh) {
+            snprintf(right_text, sizeof(right_text), "...");
         } else {
-            snprintf(right_text, sizeof(right_text), "B%c%d.%d",
-                     (diff_10x >= 0 ? '+' : '-'), abs_diff_10x / 10,
-                     abs_diff_10x % 10);
+            if (!fresh)
+                diff_10x = estimate_score_10x_logic();
+            diff_10x = round_10x_to_half(diff_10x);
+            int abs_diff_10x = diff_10x < 0 ? -diff_10x : diff_10x;
+            if (fresh) {
+                snprintf(right_text, sizeof(right_text), "B%c%d.%d(%d%%)",
+                         (diff_10x >= 0 ? '+' : '-'), abs_diff_10x / 10,
+                         abs_diff_10x % 10, pct);
+            } else {
+                snprintf(right_text, sizeof(right_text), "B%c%d.%d",
+                         (diff_10x >= 0 ? '+' : '-'), abs_diff_10x / 10,
+                         abs_diff_10x % 10);
+            }
         }
     }
     graphics_draw_text(ctx, right_text,
@@ -204,19 +209,25 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
     // Live territory overlay (Settings toggle): tint estimated territory
     // and mark dead stones, same maps as the ESTIMATE view. The tint
     // prefers the server ownership map when fresh, else local influence.
+    // Dead marks are local Benson verdicts OR server-confident dead
+    // (stone on a strongly opponent-owned point).
     if (terr_estimate_on) {
         uint8_t owner[BOARD_SIZE * BOARD_SIZE];
         bool dead[BOARD_SIZE * BOARD_SIZE];
         const int8_t *sown = server_owner_map();
         if (sown) {
-            for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
-                int v = sown[i];
-                owner[i] = (v >= 20) ? BLACK : (v <= -20) ? WHITE : EMPTY;
-            }
+            for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++)
+                owner[i] = server_owner_color(sown[i]);
         } else {
             score_influence_10x(board, owner);
         }
         find_dead_map(board, dead);
+        if (sown) {
+            for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
+                if (board[i] != EMPTY && server_stone_dead(sown[i], board[i]))
+                    dead[i] = true;
+            }
+        }
         for (int row = 0; row < BOARD_SIZE; row++) {
             for (int col = 0; col < BOARD_SIZE; col++) {
                 int idx = board_index(row, col);
@@ -231,11 +242,14 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
                                        0, GCornerNone);
                 } else if ((board[idx] == BLACK || board[idx] == WHITE) &&
                            dead[idx]) {
-                    graphics_context_set_stroke_color(
+                    // Dead marks read exactly like territory tint (small
+                    // filled square, opposite color); no clash since tint
+                    // only ever sits on empty points.
+                    graphics_context_set_fill_color(
                         ctx, (board[idx] == BLACK) ? COLOR_WHITE_STONE
                                                   : COLOR_BLACK_STONE);
-                    graphics_draw_rect(ctx, GRect(p.x - 5, p.y - 5, 11, 11));
-                    graphics_draw_rect(ctx, GRect(p.x - 4, p.y - 4, 9, 9));
+                    graphics_fill_rect(ctx, GRect(p.x - 2, p.y - 2, 5, 5),
+                                       0, GCornerNone);
                 }
             }
         }
