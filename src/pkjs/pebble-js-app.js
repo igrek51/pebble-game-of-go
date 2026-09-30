@@ -4643,8 +4643,10 @@ function handleAiRequest(payload) {
     // Katago rank profile from the watch (Settings, key 9); allowlist so
     // a corrupt/foreign message can never smuggle an arbitrary profile.
     var aiProfile = payload[9];
-    if (aiProfile !== 'rank_12k' && aiProfile !== 'rank_10k' &&
-        aiProfile !== 'rank_8k')
+    if (aiProfile !== 'rank_14k' && aiProfile !== 'rank_12k' &&
+        aiProfile !== 'rank_10k' && aiProfile !== 'rank_8k' &&
+        aiProfile !== 'rank_6k' && aiProfile !== 'rank_4k' &&
+        aiProfile !== 'rank_2k')
         aiProfile = 'rank_12k';
     console.log('pkjs: engine=' + (aiEngine === 1 ? 'katago' : 'mcts') +
                 ' profile=' + aiProfile);

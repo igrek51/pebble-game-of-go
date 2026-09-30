@@ -32,10 +32,11 @@ bool terr_estimate_on = false;
 int ai_engine = AI_ENGINE_MCTS;
 // Katago level (Settings, persisted, default 12k): index into the
 // rank-profile table below. Only used with AI_ENGINE_KATAGO.
-int katago_level = 0;
+int katago_level = 1;
 
 static const char *const katago_profiles[] = {
-    "rank_12k", "rank_10k", "rank_8k",
+    "rank_14k", "rank_12k", "rank_10k", "rank_8k", "rank_6k", "rank_4k",
+    "rank_2k",
 };
 
 const char *katago_profile(void) {

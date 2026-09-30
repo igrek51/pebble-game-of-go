@@ -158,7 +158,7 @@ static bool load_game_state(void) {
         if (loaded_engine == AI_ENGINE_KATAGO)
             ai_engine = AI_ENGINE_KATAGO;
     }
-    katago_level = 0;
+    katago_level = 1; // 12k default
     if (persist_exists(PKEY_KATAGO_LEVEL)) {
         int loaded_level = persist_read_int(PKEY_KATAGO_LEVEL);
         if (loaded_level >= 0 && loaded_level < katago_level_count())
