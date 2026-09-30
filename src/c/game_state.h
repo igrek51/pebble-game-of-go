@@ -38,6 +38,11 @@ extern bool terr_estimate_on;
 #define AI_ENGINE_MCTS 0
 #define AI_ENGINE_KATAGO 1
 extern int ai_engine;
+// Katago level index (default 0 = 12k). Profile string for the server,
+// level count for cycling in Settings.
+extern int katago_level;
+const char *katago_profile(void);
+int katago_level_count(void);
 
 void init_board_logic(void);
 

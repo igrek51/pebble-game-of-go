@@ -4388,7 +4388,7 @@ function requestServerMove(player, lastRow, lastCol, passes, movesMade) {
     var body = JSON.stringify({
         stones: { B: bStones, W: wStones },
         toMove: player === BLACK ? 'B' : 'W',
-        profile: KATAGO_PROFILE
+        profile: (gReqCtx && gReqCtx.profile) || KATAGO_PROFILE
     });
     var xhr;
     try {
@@ -4514,9 +4514,17 @@ function handleAiRequest(payload) {
     var aiEngine = payload[8] | 0;
     if (aiEngine !== 1)
         aiEngine = 0;
-    console.log('pkjs: engine=' + (aiEngine === 1 ? 'katago' : 'mcts'));
+    // Katago rank profile from the watch (Settings, key 9); allowlist so
+    // a corrupt/foreign message can never smuggle an arbitrary profile.
+    var aiProfile = payload[9];
+    if (aiProfile !== 'rank_12k' && aiProfile !== 'rank_10k' &&
+        aiProfile !== 'rank_8k')
+        aiProfile = 'rank_12k';
+    console.log('pkjs: engine=' + (aiEngine === 1 ? 'katago' : 'mcts') +
+                ' profile=' + aiProfile);
     gReqCtx = { player: currentPlayer, movesMade: movesMade,
-                passes: consecutivePasses, engine: aiEngine };
+                passes: consecutivePasses, engine: aiEngine,
+                profile: aiProfile };
 
     // Server-side 12k (Human SL) first when the Katago engine is
     // selected; the local engine below is the offline fallback (and the

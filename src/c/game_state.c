@@ -26,6 +26,24 @@ bool terr_estimate_on = false;
 // AI engine setting (Settings menu, persisted, default MCTS). Applies to
 // new companion requests; not reset by New Game.
 int ai_engine = AI_ENGINE_MCTS;
+// Katago level (Settings, persisted, default 12k): index into the
+// rank-profile table below. Only used with AI_ENGINE_KATAGO.
+int katago_level = 0;
+
+static const char *const katago_profiles[] = {
+    "rank_12k", "rank_10k", "rank_8k",
+};
+
+const char *katago_profile(void) {
+    int n = (int)(sizeof(katago_profiles) / sizeof(katago_profiles[0]));
+    if (katago_level < 0 || katago_level >= n)
+        katago_level = 0;
+    return katago_profiles[katago_level];
+}
+
+int katago_level_count(void) {
+    return (int)(sizeof(katago_profiles) / sizeof(katago_profiles[0]));
+}
 
 // Move history for Undo: 0-80 stone position, -1 pass, RAM-only. Stones
 // recorded on placement, passes on pass. Replay rebuilds captures/ko

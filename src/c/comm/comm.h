@@ -18,7 +18,7 @@ typedef void (*comm_score_callback)(int score_10x, int black_pct, int for_moves,
 
 void comm_init(void);
 bool comm_is_connected(void);
-void comm_request_ai_move(uint8_t current_player, int last_row, int last_col, int consecutive_passes, int moves_made, int ai_engine, comm_ai_move_callback callback);
+void comm_request_ai_move(uint8_t current_player, int last_row, int last_col, int consecutive_passes, int moves_made, int ai_engine, const char *katago_profile, comm_ai_move_callback callback);
 void comm_set_score_callback(comm_score_callback callback);
 void comm_cancel(void);
 

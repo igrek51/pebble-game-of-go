@@ -89,6 +89,7 @@ enum {
     PKEY_KO_ACTIVE,
     PKEY_TERR_EST,
     PKEY_AI_ENGINE,
+    PKEY_KATAGO_LEVEL,
 };
 
 static void save_game_state(void) {
@@ -109,6 +110,7 @@ static void save_game_state(void) {
     persist_write_int(PKEY_KO_ACTIVE, ko_active ? 1 : 0);
     persist_write_int(PKEY_TERR_EST, terr_estimate_on ? 1 : 0);
     persist_write_int(PKEY_AI_ENGINE, ai_engine);
+    persist_write_int(PKEY_KATAGO_LEVEL, katago_level);
     APP_LOG(APP_LOG_LEVEL_INFO, "game: state saved (moves=%d)", moves_made);
 }
 
@@ -151,6 +153,12 @@ static bool load_game_state(void) {
         int loaded_engine = persist_read_int(PKEY_AI_ENGINE);
         if (loaded_engine == AI_ENGINE_KATAGO)
             ai_engine = AI_ENGINE_KATAGO;
+    }
+    katago_level = 0;
+    if (persist_exists(PKEY_KATAGO_LEVEL)) {
+        int loaded_level = persist_read_int(PKEY_KATAGO_LEVEL);
+        if (loaded_level >= 0 && loaded_level < katago_level_count())
+            katago_level = loaded_level;
     }
     // A thinking/cursor state means nothing after a restart (any other
     // value, including garbage, lands here too); an AI turn is re-armed
@@ -550,7 +558,8 @@ static void ai_move_callback(void *data) {
         think_timer_start();
         s_req_epoch = ++s_ai_epoch;
         comm_request_ai_move(current_player, last_move_row, last_move_col,
-                             consecutive_passes, moves_made, ai_engine, on_pkjs_move);
+                             consecutive_passes, moves_made, ai_engine,
+                             katago_profile(), on_pkjs_move);
     } else {
         APP_LOG(APP_LOG_LEVEL_INFO, "game: BT disconnected, AI unavailable");
         ai_unavailable();
@@ -846,12 +855,15 @@ static void hide_mode_select(void) {
 // Titles refresh on every open; both persist and repaint immediately.
 static char s_terr_title[28];
 static char s_engine_title[28];
+static char s_level_title[24];
 
 static void refresh_settings_titles(void) {
     snprintf(s_terr_title, sizeof(s_terr_title), "Territory Estimate: %s",
              terr_estimate_on ? "ON" : "OFF");
     snprintf(s_engine_title, sizeof(s_engine_title), "AI Engine: %s",
-             ai_engine == AI_ENGINE_KATAGO ? "Katago 12k" : "MCTS");
+             ai_engine == AI_ENGINE_KATAGO ? "Katago" : "MCTS");
+    snprintf(s_level_title, sizeof(s_level_title), "Katago Level: %s",
+             katago_profile() + 5);
 }
 
 static void settings_select_callback(int index, void *context) {
@@ -861,6 +873,13 @@ static void settings_select_callback(int index, void *context) {
     } else if (index == 1) {
         ai_engine = (ai_engine == AI_ENGINE_KATAGO) ? AI_ENGINE_MCTS
                                                     : AI_ENGINE_KATAGO;
+    } else if (index == 2) {
+        // Level only applies to server-side Katago.
+        if (ai_engine != AI_ENGINE_KATAGO) {
+            show_error_dialog("Katago engine only");
+            return;
+        }
+        katago_level = (katago_level + 1) % katago_level_count();
     } else {
         return;
     }
@@ -877,13 +896,15 @@ static void show_settings(void) {
     refresh_settings_titles();
     if (!s_settings_window) {
         s_settings_window = window_create();
-        static SimpleMenuItem items[2];
+        static SimpleMenuItem items[3];
         items[0] = (SimpleMenuItem){.title = s_terr_title,
                                     .callback = settings_select_callback};
         items[1] = (SimpleMenuItem){.title = s_engine_title,
                                     .callback = settings_select_callback};
+        items[2] = (SimpleMenuItem){.title = s_level_title,
+                                    .callback = settings_select_callback};
         settings_sections[0] =
-            (SimpleMenuSection){.num_items = 2, .items = items};
+            (SimpleMenuSection){.num_items = 3, .items = items};
         s_settings_layer = simple_menu_layer_create(
             layer_get_bounds(window_get_root_layer(s_settings_window)),
             s_settings_window, settings_sections, 1, NULL);
