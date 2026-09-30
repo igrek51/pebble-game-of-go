@@ -18,6 +18,9 @@ static int s_diff_10x = 0;
 // is drawn instead of a stale/local number (tint/dead marks stay local).
 static bool s_have_server = false;
 static bool s_open = false;
+// MCTS mode: the number is the local heuristic (no server traffic), so
+// it always shows. Katago mode: server value or "..." while loading.
+static bool s_show_local = false;
 
 static void estimate_update_proc(Layer *layer, GContext *ctx) {
     GRect bounds = layer_get_bounds(layer);
@@ -53,7 +56,7 @@ static void estimate_update_proc(Layer *layer, GContext *ctx) {
     }
     int abs_diff = 0;
     char score[16];
-    if (s_have_server) {
+    if (s_have_server || s_show_local) {
         abs_diff = s_diff_10x < 0 ? -s_diff_10x : s_diff_10x;
         snprintf(score, sizeof(score), "B%c%d.%d", (s_diff_10x >= 0 ? '+' : '-'),
                  abs_diff / 10, abs_diff % 10);
@@ -171,20 +174,29 @@ static void estimate_click_config(Window *window) {
 }
 
 void estimate_view_show(void (*on_close)(void)) {
-    // Tint/dead marks are always local; the number is a fresh server
-    // estimate only ("..." while none has arrived for this position).
-    const int8_t *sown = server_owner_map();
-    if (sown) {
-        for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
-            int v = sown[i];
-            s_owner[i] = (uint8_t)((v >= 20) ? BLACK : (v <= -20) ? WHITE : EMPTY);
-        }
-    } else {
+    // Tint/dead marks are always local. The number: local heuristic in
+    // MCTS mode (always shown); a fresh server estimate in Katago mode
+    // ("..." while none has arrived for this position).
+    if (ai_engine == AI_ENGINE_MCTS) {
         score_influence_10x(board, s_owner);
-    }
-    s_have_server = server_score_fresh(&s_diff_10x, NULL);
-    if (s_have_server)
         s_diff_10x = round_10x_to_half(s_diff_10x);
+        s_have_server = false;
+        s_show_local = true;
+    } else {
+        const int8_t *sown = server_owner_map();
+        if (sown) {
+            for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++) {
+                int v = sown[i];
+                s_owner[i] = (uint8_t)((v >= 20) ? BLACK : (v <= -20) ? WHITE : EMPTY);
+            }
+        } else {
+            score_influence_10x(board, s_owner);
+        }
+        s_have_server = server_score_fresh(&s_diff_10x, NULL);
+        if (s_have_server)
+            s_diff_10x = round_10x_to_half(s_diff_10x);
+        s_show_local = false;
+    }
     find_dead_map(board, s_dead);
     s_open = true;
     s_on_close = on_close;

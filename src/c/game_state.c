@@ -23,19 +23,45 @@ int last_move_row = 4;
 int last_move_col = 4;
 bool last_move_placed = false;
 bool terr_estimate_on = false;
+// AI engine setting (Settings menu, persisted, default MCTS). Applies to
+// new companion requests; not reset by New Game.
+int ai_engine = AI_ENGINE_MCTS;
 
-// Move history for Undo: 0-80 stone position, -1 pass. Stones recorded
-// on placement, passes on pass. NOT persisted (a reloaded game starts
-// with an empty history, so Undo is unavailable until the next move).
-// Replay rebuilds captures/ko exactly (same commit order as play).
+// Move history for Undo: 0-80 stone position, -1 pass, RAM-only. Stones
+// recorded on placement, passes on pass. Replay rebuilds captures/ko
+// exactly (same commit order as play), on top of the session base below.
 #define MOVE_HIST_MAX 300
 static int8_t move_hist[MOVE_HIST_MAX];
 static int move_hist_len = 0;
-// True only when the history covers the whole game from the empty board.
-// False after loading a persisted game (stones predate the history) or
-// after a recording overflow: replay would resurrect a wrong position,
-// so Undo refuses instead of corrupting the board.
+// False only after a recording overflow: replay would resurrect a wrong
+// position, so Undo refuses instead of corrupting the board.
 static bool hist_complete = true;
+// Session base: the position the current session started from (empty on
+// new game, loaded stones on a restore). Only session moves are
+// retractable; older stones are never touched.
+static uint8_t base_board[BOARD_SIZE * BOARD_SIZE];
+static uint8_t base_ko[BOARD_SIZE * BOARD_SIZE];
+static bool base_ko_active = false;
+static uint8_t base_player = BLACK;
+static int base_passes = 0;
+static int base_moves = 0;
+static int base_last_row = 4;
+static int base_last_col = 4;
+static bool base_last_placed = false;
+
+void hist_snapshot(void) {
+    memcpy(base_board, board, sizeof(board));
+    memcpy(base_ko, ko_board, sizeof(ko_board));
+    base_ko_active = ko_active;
+    base_player = current_player;
+    base_passes = consecutive_passes;
+    base_moves = moves_made;
+    base_last_row = last_move_row;
+    base_last_col = last_move_col;
+    base_last_placed = last_move_placed;
+    move_hist_len = 0;
+    hist_complete = true;
+}
 
 void hist_record(int pos) {
     if (move_hist_len < MOVE_HIST_MAX) {
@@ -53,29 +79,27 @@ bool hist_can_undo(void) {
     return hist_complete && move_hist_len > 0;
 }
 
-void hist_mark_incomplete(void) {
-    hist_complete = false;
-}
-
 void undo_to_len(int keep) {
     if (keep < 0)
         keep = 0;
     if (keep > move_hist_len)
         keep = move_hist_len;
     move_hist_len = keep;
-    memset(board, EMPTY, sizeof(board));
-    memset(ko_board, EMPTY, sizeof(ko_board));
-    ko_active = false;
-    current_player = BLACK;
-    consecutive_passes = 0;
-    moves_made = 0;
-    last_move_row = 4;
-    last_move_col = 4;
-    last_move_placed = false;
+    // Restart from the session base, then replay the retained session
+    // moves (same commit order as play, so captures/ko rebuild exactly).
+    memcpy(board, base_board, sizeof(board));
+    memcpy(ko_board, base_ko, sizeof(ko_board));
+    ko_active = base_ko_active;
+    current_player = base_player;
+    consecutive_passes = base_passes;
+    moves_made = base_moves;
+    last_move_row = base_last_row;
+    last_move_col = base_last_col;
+    last_move_placed = base_last_placed;
     server_score_moves = -1;
     static const int dr[] = {-1, 1, 0, 0};
     static const int dc[] = {0, 0, -1, 1};
-    uint8_t turn = BLACK;
+    uint8_t turn = current_player; // base side to move, restored above
     for (int i = 0; i < keep; i++) {
         int pos = move_hist[i];
         if (pos < 0) {
@@ -125,6 +149,7 @@ void init_board_logic(void) {
     last_move_placed = false;
     move_hist_len = 0;
     hist_complete = true;
+    hist_snapshot();
     server_score_10x = 0;
     server_score_pct = 50;
     server_score_moves = -1;

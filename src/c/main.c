@@ -88,6 +88,7 @@ enum {
     PKEY_UI_STATE,
     PKEY_KO_ACTIVE,
     PKEY_TERR_EST,
+    PKEY_AI_ENGINE,
 };
 
 static void save_game_state(void) {
@@ -107,6 +108,7 @@ static void save_game_state(void) {
     persist_write_int(PKEY_UI_STATE, ui_state);
     persist_write_int(PKEY_KO_ACTIVE, ko_active ? 1 : 0);
     persist_write_int(PKEY_TERR_EST, terr_estimate_on ? 1 : 0);
+    persist_write_int(PKEY_AI_ENGINE, ai_engine);
     APP_LOG(APP_LOG_LEVEL_INFO, "game: state saved (moves=%d)", moves_made);
 }
 
@@ -144,14 +146,20 @@ static bool load_game_state(void) {
                 persist_read_int(PKEY_KO_ACTIVE) != 0;
     terr_estimate_on = persist_exists(PKEY_TERR_EST) &&
                        persist_read_int(PKEY_TERR_EST) != 0;
+    ai_engine = AI_ENGINE_MCTS;
+    if (persist_exists(PKEY_AI_ENGINE)) {
+        int loaded_engine = persist_read_int(PKEY_AI_ENGINE);
+        if (loaded_engine == AI_ENGINE_KATAGO)
+            ai_engine = AI_ENGINE_KATAGO;
+    }
     // A thinking/cursor state means nothing after a restart (any other
     // value, including garbage, lands here too); an AI turn is re-armed
     // by the caller. A finished game is re-shown by the caller.
     if (ui_state != GAME_OVER_STATE)
         ui_state = VIEW;
-    // Loaded stones predate the (empty) move history: Undo must refuse
-    // until a new game starts recording from scratch.
-    hist_mark_incomplete();
+    // The move history is RAM-only: snapshot the loaded position as the
+    // session base, so only moves made from here on are retractable.
+    hist_snapshot();
     APP_LOG(APP_LOG_LEVEL_INFO,
             "game: state loaded (moves=%d, player=%d, mode=%d)", moves_made,
             current_player, game_mode);
@@ -542,7 +550,7 @@ static void ai_move_callback(void *data) {
         think_timer_start();
         s_req_epoch = ++s_ai_epoch;
         comm_request_ai_move(current_player, last_move_row, last_move_col,
-                             consecutive_passes, moves_made, on_pkjs_move);
+                             consecutive_passes, moves_made, ai_engine, on_pkjs_move);
     } else {
         APP_LOG(APP_LOG_LEVEL_INFO, "game: BT disconnected, AI unavailable");
         ai_unavailable();
@@ -834,18 +842,30 @@ static void hide_mode_select(void) {
         window_stack_remove(s_mode_window, true);
 }
 
-// Settings submenu: currently just the territory-estimate toggle.
-// Title refreshes on every open; the toggle persists and repaints.
+// Settings submenu: territory-estimate toggle and AI engine choice.
+// Titles refresh on every open; both persist and repaint immediately.
 static char s_terr_title[28];
+static char s_engine_title[28];
+
+static void refresh_settings_titles(void) {
+    snprintf(s_terr_title, sizeof(s_terr_title), "Territory Estimate: %s",
+             terr_estimate_on ? "ON" : "OFF");
+    snprintf(s_engine_title, sizeof(s_engine_title), "AI Engine: %s",
+             ai_engine == AI_ENGINE_KATAGO ? "Katago 12k" : "MCTS");
+}
 
 static void settings_select_callback(int index, void *context) {
     (void)context;
-    if (index != 0)
+    if (index == 0) {
+        terr_estimate_on = !terr_estimate_on;
+    } else if (index == 1) {
+        ai_engine = (ai_engine == AI_ENGINE_KATAGO) ? AI_ENGINE_MCTS
+                                                    : AI_ENGINE_KATAGO;
+    } else {
         return;
-    terr_estimate_on = !terr_estimate_on;
+    }
     save_game_state();
-    snprintf(s_terr_title, sizeof(s_terr_title), "Territory Estimate: %s",
-             terr_estimate_on ? "ON" : "OFF");
+    refresh_settings_titles();
     if (s_settings_layer)
         layer_mark_dirty(
             simple_menu_layer_get_layer(s_settings_layer));
@@ -854,15 +874,16 @@ static void settings_select_callback(int index, void *context) {
 }
 
 static void show_settings(void) {
-    snprintf(s_terr_title, sizeof(s_terr_title), "Territory Estimate: %s",
-             terr_estimate_on ? "ON" : "OFF");
+    refresh_settings_titles();
     if (!s_settings_window) {
         s_settings_window = window_create();
-        static SimpleMenuItem items[1];
+        static SimpleMenuItem items[2];
         items[0] = (SimpleMenuItem){.title = s_terr_title,
                                     .callback = settings_select_callback};
+        items[1] = (SimpleMenuItem){.title = s_engine_title,
+                                    .callback = settings_select_callback};
         settings_sections[0] =
-            (SimpleMenuSection){.num_items = 1, .items = items};
+            (SimpleMenuSection){.num_items = 2, .items = items};
         s_settings_layer = simple_menu_layer_create(
             layer_get_bounds(window_get_root_layer(s_settings_window)),
             s_settings_window, settings_sections, 1, NULL);

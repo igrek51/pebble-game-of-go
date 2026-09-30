@@ -4193,7 +4193,7 @@ var srvScoreBoard = new Array(BOARD_SIZE * BOARD_SIZE);
 var srvScoreKo = new Array(BOARD_SIZE * BOARD_SIZE);
 function requestServerScore(moveRow, moveCol, isPass) {
     if (!KATAGO_SCORE_URL || typeof XMLHttpRequest === 'undefined' ||
-        scorePending || !gReqCtx)
+        scorePending || !gReqCtx || gReqCtx.engine !== 1)
         return;
     var ctx = gReqCtx;
     var opp = (ctx.player === BLACK) ? WHITE : BLACK;
@@ -4508,13 +4508,21 @@ function handleAiRequest(payload) {
     }
     console.log('pkjs: player=' + currentPlayer + ' last=(' + lastRow + ',' + lastCol + ') passes=' + consecutivePasses + ' moves=' + movesMade);
     reqPlayer = currentPlayer;
+    // AI engine selected on the watch (Settings, key 8, default MCTS):
+    // MCTS plays fully locally with zero server traffic; Katago uses the
+    // server first with the local engine as offline fallback.
+    var aiEngine = payload[8] | 0;
+    if (aiEngine !== 1)
+        aiEngine = 0;
+    console.log('pkjs: engine=' + (aiEngine === 1 ? 'katago' : 'mcts'));
     gReqCtx = { player: currentPlayer, movesMade: movesMade,
-                passes: consecutivePasses };
+                passes: consecutivePasses, engine: aiEngine };
 
-    // Server-side 12k (Human SL) first; the local engine below is the
-    // offline fallback. Server replies arrive asynchronously.
-    if (requestServerMove(currentPlayer, lastRow, lastCol,
-                          consecutivePasses, movesMade))
+    // Server-side 12k (Human SL) first when the Katago engine is
+    // selected; the local engine below is the offline fallback (and the
+    // whole path in MCTS mode). Server replies arrive asynchronously.
+    if (aiEngine === 1 && requestServerMove(currentPlayer, lastRow, lastCol,
+                                            consecutivePasses, movesMade))
         return;
     localAiMove(currentPlayer, lastRow, lastCol, consecutivePasses,
                 movesMade);

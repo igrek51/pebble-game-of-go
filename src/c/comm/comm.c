@@ -151,9 +151,10 @@ bool comm_is_connected(void) {
 
 void comm_request_ai_move(uint8_t current_player, int last_row, int last_col,
                           int consecutive_passes, int moves_made,
-                          comm_ai_move_callback callback) {
-    APP_LOG(APP_LOG_LEVEL_INFO, "comm: request AI move (player=%d last=(%d,%d) passes=%d moves=%d)",
-            current_player, last_row, last_col, consecutive_passes, moves_made);
+                          int ai_engine, comm_ai_move_callback callback) {
+    APP_LOG(APP_LOG_LEVEL_INFO, "comm: request AI move (player=%d last=(%d,%d) passes=%d moves=%d engine=%d)",
+            current_player, last_row, last_col, consecutive_passes, moves_made,
+            ai_engine);
 
     if (!bluetooth_connection_service_peek()) {
         APP_LOG(APP_LOG_LEVEL_INFO, "comm: no BT, immediate fallback");
@@ -181,6 +182,7 @@ void comm_request_ai_move(uint8_t current_player, int last_row, int last_col,
     dict_write_int32(iter, 3, last_col);
     dict_write_int32(iter, 4, consecutive_passes);
     dict_write_int32(iter, 7, moves_made);
+    dict_write_int32(iter, 8, ai_engine);
 
     dict_write_data(iter, 5, board, BOARD_SIZE * BOARD_SIZE);
 

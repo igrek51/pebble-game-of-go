@@ -33,16 +33,24 @@ extern bool last_move_placed;
 // Live territory-estimate overlay on the board (Settings toggle,
 // persisted, default off).
 extern bool terr_estimate_on;
+// Companion AI engine (Settings, persisted, default MCTS): the watch
+// forwards the choice to pkjs, which plays locally or via KataGo.
+#define AI_ENGINE_MCTS 0
+#define AI_ENGINE_KATAGO 1
+extern int ai_engine;
 
 void init_board_logic(void);
 
 // Undo history: record stone positions (row*9+col) and passes (-1);
 // truncate to `keep` plies and rebuild the position by replay.
+#define MOVE_HIST_MAX 300
 void hist_record(int pos);
 int hist_len(void);
-// False after a persisted load or a recording overflow: Undo must refuse.
+// False after a recording overflow: Undo must refuse.
 bool hist_can_undo(void);
-void hist_mark_incomplete(void);
+// Snapshot the current position as the session base (new game, restore).
+// Only moves recorded after it are retractable.
+void hist_snapshot(void);
 void undo_to_len(int keep);
 
 // Snap a 0.1pt score to the nearest possible final margin (komi 7.5

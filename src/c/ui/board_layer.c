@@ -37,9 +37,12 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
     // The thinking label keeps its live seconds; overflow ellipsizes exactly
     // like the regular turn label does.
     bool thinking = (ui_state == AI_THINKING);
-    // Wide score slot only with the territory overlay (for the winrate);
-    // otherwise the classic 60px slot.
-    int score_w = (terr_estimate_on && ui_state != GAME_OVER_STATE) ? 100 : 60;
+    // Wide score slot whenever a fresh server estimate carries a winrate
+    // (Katago mode); otherwise the classic 60px slot.
+    int srv_pct_tmp = -1;
+    bool srv_fresh = (ui_state != GAME_OVER_STATE) &&
+                     server_score_fresh(NULL, &srv_pct_tmp);
+    int score_w = srv_fresh ? 100 : 60;
     if (thinking) {
         // Full "White thinking 5s" needs ~130px at 18pt, so the label rect
         // is widened (for every state — one system) and the score rect
@@ -73,16 +76,15 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
                  (diff_10x >= 0 ? 'B' : 'W'), abs_diff_10x / 10);
     } else {
         // Fresh server estimate (KataGo /score) outranks the local
-        // influence heuristic; stale/missing falls back to it. With the
-        // territory overlay on, a fresh estimate also shows Black's
-        // winrate in a widened score slot.
+        // influence heuristic; stale/missing falls back to it. A fresh
+        // estimate always shows Black's winrate alongside the score.
         int diff_10x, pct = -1;
         bool fresh = server_score_fresh(&diff_10x, &pct);
         if (!fresh)
             diff_10x = estimate_score_10x_logic();
         diff_10x = round_10x_to_half(diff_10x);
         int abs_diff_10x = diff_10x < 0 ? -diff_10x : diff_10x;
-        if (terr_estimate_on && fresh) {
+        if (fresh) {
             snprintf(right_text, sizeof(right_text), "B%c%d.%d(%d%%)",
                      (diff_10x >= 0 ? '+' : '-'), abs_diff_10x / 10,
                      abs_diff_10x % 10, pct);
@@ -166,14 +168,17 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
                              BOARD_ORIGIN_Y + MENU_ROW * CELL_SIZE - 7, 12, 14),
                        GTextOverflowModeWordWrap, GTextAlignmentCenter, NULL);
 
-    // Hoshi points
-    graphics_context_set_fill_color(ctx, COLOR_GRID);
+    // Hoshi points (skipped with the territory overlay: the 5 dots read
+    // as territory markers next to the tint).
+    if (!terr_estimate_on) {
+        graphics_context_set_fill_color(ctx, COLOR_GRID);
     int hoshi[5][2] = {{2, 2}, {2, 6}, {4, 4}, {6, 2}, {6, 6}};
     for (int i = 0; i < 5; i++) {
         graphics_fill_circle(ctx,
                              GPoint(BOARD_ORIGIN_X + hoshi[i][1] * CELL_SIZE,
                                     BOARD_ORIGIN_Y + hoshi[i][0] * CELL_SIZE),
                              2);
+    }
     }
 
     // Stones
