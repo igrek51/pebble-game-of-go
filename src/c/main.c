@@ -93,6 +93,10 @@ enum {
 };
 
 static void save_game_state(void) {
+    // Never persist a mid-replay partial board: restore the live position
+    // first (happens only when quitting while replaying).
+    if (ui_state == REPLAY && replay_shown != hist_len())
+        replay_show_len(hist_len());
     persist_write_int(PKEY_MAGIC, SAVE_MAGIC);
     persist_write_int(PKEY_VERSION, SAVE_VERSION);
     persist_write_data(PKEY_BOARD, board, sizeof(board));
@@ -301,10 +305,26 @@ static void do_undo_ui(void) {
     after_move_played();
 }
 
+// Replay mode after game over: keep the final position on screen and let
+// Up/Down step through the known session history (the ring follows the
+// shown move). BACK starts a new game. With no history at all (restored
+// pre-history save), fall back to a fresh board.
+static void enter_replay_mode(void) {
+    if (hist_len() <= 0) {
+        init_board_full();
+        save_game_state();
+        return;
+    }
+    replay_show_len(hist_len());
+    ui_state = REPLAY;
+    layer_mark_dirty(s_canvas_layer);
+}
+
 static void do_pass_ui(void) {
     consecutive_passes++;
     ko_active = false;
     last_move_placed = false;
+    server_score_failed = false;
     hist_record(-1);
     // A pass during AI thinking (via the menu) retires the pending request:
     // its late reply must not play afterward.
@@ -315,7 +335,7 @@ static void do_pass_ui(void) {
         ui_state = GAME_OVER_STATE;
         compute_chinese_score();
         save_game_state();
-        show_gameover_dialog(init_board_full);
+        show_gameover_dialog(enter_replay_mode);
         return;
     }
 
@@ -375,6 +395,7 @@ static bool try_place_stone_ui(int row, int col) {
     last_move_placed = true;
     consecutive_passes = 0;
     current_player = opponent;
+    server_score_failed = false;
     hist_record(row * BOARD_SIZE + col);
     ui_state = VIEW;
     s_ai_epoch++; // a placed stone retires any pending AI reply
@@ -650,8 +671,20 @@ static void handle_click(ClickRecognizerRef recognizer, void *context) {
         }
     } else if (ui_state == GAME_OVER_STATE) {
         if (button == BUTTON_ID_SELECT || button == BUTTON_ID_BACK) {
+            enter_replay_mode();
+        }
+    } else if (ui_state == REPLAY) {
+        // Step through known history: Up back, Down forward (ring follows
+        // the shown move via the rebuild). BACK starts a new game.
+        if (button == BUTTON_ID_UP && replay_shown > 0) {
+            replay_show_len(replay_shown - 1);
+            layer_mark_dirty(s_canvas_layer);
+        } else if (button == BUTTON_ID_DOWN && replay_shown < hist_len()) {
+            replay_show_len(replay_shown + 1);
+            layer_mark_dirty(s_canvas_layer);
+        } else if (button == BUTTON_ID_BACK) {
             init_board_full();
-            save_game_state(); // finished game must not resurrect on reopen
+            save_game_state(); // fresh board must not resurrect on reopen
         }
     }
     layer_mark_dirty(s_canvas_layer);
@@ -673,10 +706,12 @@ static void menu_select_callback(int index, void *context) {
         hide_menu();
         // Fresh demand in Katago mode: opening ESTIMATE retries the score
         // after a network error (the overlay shows "..." meanwhile and
-        // fills in on arrival). MCTS mode needs nothing (local number).
-        if (ai_engine == AI_ENGINE_KATAGO)
+        // fills in on arrival; "-" on exhausting retries).
+        if (ai_engine == AI_ENGINE_KATAGO) {
+            server_score_failed = false;
             comm_request_score_estimate(current_player, consecutive_passes,
                                         moves_made);
+        }
         estimate_view_show(resume_ai_after_estimate);
         return;
     } else if (index == 4) {
@@ -936,7 +971,21 @@ static void window_unload(Window *window) { layer_destroy(s_canvas_layer); }
 // banner/overlay if still fresh. Stale estimates (user already moved)
 // are ignored by the freshness check at render time.
 static void on_server_score(int score_10x, int black_pct, int for_moves,
-                            int for_passes, const uint8_t *ownership) {
+                            int for_passes, const uint8_t *ownership,
+                            int failed) {
+    if (failed) {
+        // Estimate attempt failed: mark "-" but only for the position it
+        // was computed for (a newer position already has its own demand).
+        if (for_moves == moves_made && for_passes == consecutive_passes) {
+            APP_LOG(APP_LOG_LEVEL_INFO, "game: server score FAILED (moves=%d)",
+                    for_moves);
+            server_score_failed = true;
+            estimate_view_invalidate();
+            if (s_canvas_layer)
+                layer_mark_dirty(s_canvas_layer);
+        }
+        return;
+    }
     int a10 = score_10x < 0 ? -score_10x : score_10x;
     APP_LOG(APP_LOG_LEVEL_INFO, "game: server score B%c%d.%d B%d%% (moves=%d passes=%d)",
             score_10x >= 0 ? '+' : '-', a10 / 10, a10 % 10, black_pct,
@@ -961,7 +1010,7 @@ static void init(void) {
         layer_mark_dirty(s_canvas_layer);
         if (ui_state == GAME_OVER_STATE) {
             compute_chinese_score();
-            show_gameover_dialog(init_board_full);
+            show_gameover_dialog(enter_replay_mode);
         } else {
             // ui_state is VIEW here (normalized by load); re-arm the AI
             // timer iff the restored turn belongs to the AI.

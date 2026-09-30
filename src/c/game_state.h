@@ -10,6 +10,7 @@ typedef enum {
     SELECTING_ROW,
     SELECTING_COL,
     GAME_OVER_STATE,
+    REPLAY, // stepping through known history after game over (Up/Down)
     AI_THINKING // waiting on the phone companion (pkjs); the only AI engine
 } UIState;
 
@@ -56,7 +57,13 @@ bool hist_can_undo(void);
 // Snapshot the current position as the session base (new game, restore).
 // Only moves recorded after it are retractable.
 void hist_snapshot(void);
+// Truncate the history to `keep` plies and rebuild the live position.
 void undo_to_len(int keep);
+// Rebuild the shown position at `show` plies WITHOUT truncating (replay
+// mode stepping). Clamped to [0, hist_len()]. Last shown count, for the
+// banner and stepping logic.
+extern int replay_shown;
+void replay_show_len(int show);
 
 // Snap a 0.1pt score to the nearest possible final margin (komi 7.5
 // makes exact results always n+0.5): 54->55, 59->55, 61->65, -4->-5.
@@ -91,6 +98,9 @@ void server_score_set(int score_10x, int black_pct, int for_moves,
                       int for_passes, const uint8_t *own_raw);
 bool server_score_fresh(int *s10_out, int *pct_out);
 const int8_t *server_owner_map(void);
+// Latest estimate attempt failed (retries exhausted). Cleared by any
+// success, new demand, or position change.
+extern bool server_score_failed;
 
 // Seconds elapsed since the current AI thinking phase started (0 when not
 // thinking). Implemented in main.c, rendered by the status bar.

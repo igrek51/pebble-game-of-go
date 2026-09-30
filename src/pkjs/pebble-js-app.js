@@ -4183,7 +4183,7 @@ function sendMoveReply(moveRow, moveCol, isPass) {
 // the watch as a type-2 message. The watch applies it only when its
 // (moves, passes) still match — otherwise it's stale and ignored.
 var KATAGO_SCORE_URL = 'https://katago.igrek.dev/score';
-var KATAGO_SCORE_VISITS = 30;
+var KATAGO_SCORE_VISITS = 8;
 var KATAGO_SCORE_RETRIES = 2;
 if (typeof process !== 'undefined' && process.env) {
     if (process.env.PEBBLE_SERVER_SCORE_URL)
@@ -4281,12 +4281,27 @@ function fetchScoreEstimate(bStones, wStones, toMove, forMoves, forPasses) {    
     scorePending = true;
     var attempts = 0;
     var finished = false;
+    var sendFailure = function() {
+        // Failure marker (key 6): the watch shows "-" instead of "...",
+        // but only if its position still matches forMoves/forPasses.
+        try {
+            Pebble.sendAppMessage({
+                0: 2,
+                1: 0,
+                2: 0,
+                3: forMoves,
+                4: forPasses,
+                6: 1
+            }, function() {}, function() {});
+        } catch (e) {}
+    };
     var giveUp = function(why) {
         if (finished)
             return;
         finished = true;
         scorePending = false;
         console.log('pkjs: server score giving up (' + why + ')');
+        sendFailure();
     };
     var retryOrGiveUp = function(why) {
         if (finished)

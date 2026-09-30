@@ -53,6 +53,9 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
     } else if (ui_state == GAME_OVER_STATE) {
         snprintf(left_text, sizeof(left_text), "%s",
                  (black_score > white_score) ? "Black won" : "White won");
+    } else if (ui_state == REPLAY) {
+        snprintf(left_text, sizeof(left_text), "Replay %d/%d", replay_shown,
+                 hist_len());
     } else {
         bool is_ai = ((game_mode == MODE_BLACK_AI && current_player == BLACK) ||
                       (game_mode == MODE_WHITE_AI && current_player == WHITE) ||
@@ -68,7 +71,7 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
                        GTextAlignmentLeft, NULL);
 
     char right_text[32];
-    if (ui_state == GAME_OVER_STATE) {
+    if (ui_state == GAME_OVER_STATE || ui_state == REPLAY) {
         int diff_10x = (black_score * 10) - (white_score * 10 + 75);
         int abs_diff_10x = diff_10x < 0 ? -diff_10x : diff_10x;
 
@@ -82,7 +85,8 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
         int diff_10x, pct = -1;
         bool fresh = server_score_fresh(&diff_10x, &pct);
         if (ai_engine == AI_ENGINE_KATAGO && !fresh) {
-            snprintf(right_text, sizeof(right_text), "...");
+            snprintf(right_text, sizeof(right_text), "%s",
+                     server_score_failed ? "-" : "...");
         } else {
             if (!fresh)
                 diff_10x = estimate_score_10x_logic();

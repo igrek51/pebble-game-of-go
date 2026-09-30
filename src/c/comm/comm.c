@@ -65,10 +65,12 @@ static void comm_inbox_handler(DictionaryIterator *iter, void *context) {
         if (own_tuple && own_tuple->type == TUPLE_BYTE_ARRAY &&
             own_tuple->length == BOARD_SIZE * BOARD_SIZE)
             own = own_tuple->value->data;
-        APP_LOG(APP_LOG_LEVEL_INFO, "comm: GOT SCORE from pkjs: %d (B%d%%, moves=%d passes=%d own=%d)",
-                s10, pct, fm, fp, own ? 1 : 0);
+        int failed = 0;
+        tuple_get_int(dict_find(iter, 6), &failed);
+        APP_LOG(APP_LOG_LEVEL_INFO, "comm: GOT SCORE from pkjs: %d (B%d%%, moves=%d passes=%d own=%d failed=%d)",
+                s10, pct, fm, fp, own ? 1 : 0, failed);
         if (s_score_callback)
-            s_score_callback(s10, pct, fm, fp, own);
+            s_score_callback(s10, pct, fm, fp, own, failed);
         return;
     }
 

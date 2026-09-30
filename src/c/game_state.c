@@ -17,6 +17,10 @@ int server_score_passes = -1;
 // only together with the score above (same freshness keys).
 static int8_t server_own[BOARD_SIZE * BOARD_SIZE];
 static bool server_own_valid = false;
+// Set when the latest estimate attempt for the current position failed
+// (all retries exhausted): render "-" instead of the "..." loading mark.
+// Cleared by any success, new demand, or position change.
+bool server_score_failed = false;
 UIState ui_state = VIEW;
 GameMode game_mode = MODE_WHITE_AI;
 int last_move_row = 4;
@@ -97,12 +101,31 @@ bool hist_can_undo(void) {
     return hist_complete && move_hist_len > 0;
 }
 
+static void rebuild_plies(int n);
+
 void undo_to_len(int keep) {
     if (keep < 0)
         keep = 0;
     if (keep > move_hist_len)
         keep = move_hist_len;
     move_hist_len = keep;
+    rebuild_plies(keep);
+}
+
+// Shown-position rebuild for replay mode: same as undo but WITHOUT
+// truncating the history, so stepping back and forth is lossless.
+int replay_shown = 0;
+
+void replay_show_len(int show) {
+    if (show < 0)
+        show = 0;
+    if (show > move_hist_len)
+        show = move_hist_len;
+    replay_shown = show;
+    rebuild_plies(show);
+}
+
+static void rebuild_plies(int n) {
     // Restart from the session base, then replay the retained session
     // moves (same commit order as play, so captures/ko rebuild exactly).
     memcpy(board, base_board, sizeof(board));
@@ -115,10 +138,11 @@ void undo_to_len(int keep) {
     last_move_col = base_last_col;
     last_move_placed = base_last_placed;
     server_score_moves = -1;
+    server_score_failed = false;
     static const int dr[] = {-1, 1, 0, 0};
     static const int dc[] = {0, 0, -1, 1};
     uint8_t turn = current_player; // base side to move, restored above
-    for (int i = 0; i < keep; i++) {
+    for (int i = 0; i < n; i++) {
         int pos = move_hist[i];
         if (pos < 0) {
             consecutive_passes++;
@@ -172,6 +196,7 @@ void init_board_logic(void) {
     server_score_pct = 50;
     server_score_moves = -1;
     server_score_passes = -1;
+    server_score_failed = false;
 }
 
 void server_score_set(int score_10x, int black_pct, int for_moves,
@@ -180,6 +205,7 @@ void server_score_set(int score_10x, int black_pct, int for_moves,
     server_score_pct = black_pct;
     server_score_moves = for_moves;
     server_score_passes = for_passes;
+    server_score_failed = false;
     if (own_raw) {
         for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++)
             server_own[i] = (int8_t)(own_raw[i] - 100);

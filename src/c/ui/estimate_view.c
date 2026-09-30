@@ -60,6 +60,8 @@ static void estimate_update_proc(Layer *layer, GContext *ctx) {
         abs_diff = s_diff_10x < 0 ? -s_diff_10x : s_diff_10x;
         snprintf(score, sizeof(score), "B%c%d.%d", (s_diff_10x >= 0 ? '+' : '-'),
                  abs_diff / 10, abs_diff % 10);
+    } else if (server_score_failed) {
+        snprintf(score, sizeof(score), "-");
     } else {
         snprintf(score, sizeof(score), "...");
     }
@@ -226,6 +228,11 @@ void estimate_view_hide(void) {
     s_open = false;
     if (s_window)
         window_stack_remove(s_window, true);
+}
+
+void estimate_view_invalidate(void) {
+    if (s_open && s_layer)
+        layer_mark_dirty(s_layer);
 }
 
 bool estimate_view_refresh_score(void) {

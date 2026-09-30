@@ -14,4 +14,7 @@ void estimate_view_hide(void);
 // replace "..." with the number. Returns true when it refreshed.
 bool estimate_view_refresh_score(void);
 
+// Redraw the overlay if open (used when the failed/loading mark changes).
+void estimate_view_invalidate(void);
+
 #endif
