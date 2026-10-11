@@ -13,6 +13,9 @@ void show_scroll_dialog(const char *message);
 
 void show_gameover_dialog(void (*on_dismiss)(void));
 void hide_gameover_dialog(void);
+// Rebuild the game-over text if the dialog is open (server final lands
+// after the dialog shows).
+void gameover_refresh(void);
 
 void show_error_dialog(const char *message);
 void hide_error_dialog(void);

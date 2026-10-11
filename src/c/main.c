@@ -333,7 +333,25 @@ static void do_pass_ui(void) {
 
     if (consecutive_passes >= 2) {
         ui_state = GAME_OVER_STATE;
-        compute_chinese_score();
+        compute_chinese_score(); // instant local fallback
+        // Katago mode: the final result comes from the server (local
+        // dead-stone counting miscounts). Reuse an already-fresh final
+        // estimate, else demand one; offline falls back to local.
+        go_server = false;
+        go_have = false;
+        if (ai_engine == AI_ENGINE_KATAGO) {
+            int lead;
+            if (server_score_fresh(&lead, NULL)) {
+                go_server = true;
+                go_lead_10x = round_10x_to_half(lead);
+                go_have = true;
+            } else {
+                go_moves = moves_made;
+                go_passes = consecutive_passes;
+                go_server = comm_request_score_estimate(
+                    current_player, consecutive_passes, moves_made);
+            }
+        }
         save_game_state();
         show_gameover_dialog(enter_replay_mode);
         return;
@@ -981,6 +999,7 @@ static void on_server_score(int score_10x, int black_pct, int for_moves,
                     for_moves);
             server_score_failed = true;
             estimate_view_invalidate();
+            gameover_refresh();
             if (s_canvas_layer)
                 layer_mark_dirty(s_canvas_layer);
         }
@@ -991,6 +1010,14 @@ static void on_server_score(int score_10x, int black_pct, int for_moves,
             score_10x >= 0 ? '+' : '-', a10 / 10, a10 % 10, black_pct,
             for_moves, for_passes);
     server_score_set(score_10x, black_pct, for_moves, for_passes, ownership);
+    // Final result for a Katago game over: capture the matching estimate
+    // and refresh the dialog/banner (they show "..." until it lands).
+    if (go_server && !go_have && for_moves == go_moves &&
+        for_passes == go_passes) {
+        go_lead_10x = round_10x_to_half(score_10x);
+        go_have = true;
+        gameover_refresh();
+    }
     estimate_view_refresh_score();
     if (s_canvas_layer)
         layer_mark_dirty(s_canvas_layer);

@@ -213,16 +213,16 @@ void comm_set_score_callback(comm_score_callback callback) {
     s_score_callback = callback;
 }
 
-void comm_request_score_estimate(uint8_t current_player,
+bool comm_request_score_estimate(uint8_t current_player,
                                  int consecutive_passes, int moves_made) {
     if (!bluetooth_connection_service_peek()) {
         APP_LOG(APP_LOG_LEVEL_DEBUG, "comm: score demand skipped (no BT)");
-        return;
+        return false;
     }
     DictionaryIterator *iter;
     if (app_message_outbox_begin(&iter) != APP_MSG_OK) {
         APP_LOG(APP_LOG_LEVEL_DEBUG, "comm: score demand outbox busy");
-        return;
+        return false;
     }
     dict_write_int32(iter, 0, 3);
     dict_write_int32(iter, 1, current_player);
@@ -233,10 +233,12 @@ void comm_request_score_estimate(uint8_t current_player,
     memcpy(ko_bytes, ko_board, BOARD_SIZE * BOARD_SIZE);
     ko_bytes[BOARD_SIZE * BOARD_SIZE] = ko_active ? 1 : 0;
     dict_write_data(iter, 6, ko_bytes, sizeof(ko_bytes));
-    if (app_message_outbox_send() != APP_MSG_OK)
+    if (app_message_outbox_send() != APP_MSG_OK) {
         APP_LOG(APP_LOG_LEVEL_DEBUG, "comm: score demand send failed");
-    else
-        APP_LOG(APP_LOG_LEVEL_INFO, "comm: score demand sent (moves=%d)", moves_made);
+        return false;
+    }
+    APP_LOG(APP_LOG_LEVEL_INFO, "comm: score demand sent (moves=%d)", moves_made);
+    return true;
 }
 
 void comm_cancel(void) {

@@ -64,8 +64,8 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
                  is_ai ? "is thinking" : "to move");
     }
     graphics_draw_text(ctx, left_text,
-                       fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
-                       GRect(5, 2, 120, 20),
+                       fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                       GRect(5, 0, 200, 20),
                        GTextOverflowModeTrailingEllipsis,
                        GTextAlignmentLeft, NULL);
 

@@ -39,6 +39,16 @@ extern bool terr_estimate_on;
 #define AI_ENGINE_MCTS 0
 #define AI_ENGINE_KATAGO 1
 extern int ai_engine;
+// Final result at game over (Katago mode): when go_server is set, the
+// banner and game-over dialog use the server lead (go_lead_10x,
+// Black-relative, .5-rounded) instead of the local count. go_moves /
+// go_passes are the final position keys the estimate must match; go_have
+// marks its arrival.
+extern bool go_server;
+extern int go_moves;
+extern int go_passes;
+extern int go_lead_10x;
+extern bool go_have;
 // Katago level index (default 0 = 12k). Profile string for the server,
 // level count for cycling in Settings.
 extern int katago_level;

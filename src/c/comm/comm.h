@@ -22,8 +22,9 @@ void comm_request_ai_move(uint8_t current_player, int last_row, int last_col, in
 void comm_set_score_callback(comm_score_callback callback);
 // Fire-and-forget score demand (type 3): pkjs scores the sent position
 // as it stands and answers with a type-2 estimate. No callback, no
-// timeout — failures just leave "..." until the next demand.
-void comm_request_score_estimate(uint8_t current_player, int consecutive_passes, int moves_made);
+// timeout — failures just leave "..." until the next demand. Returns
+// false when the message could not even be queued (no BT / outbox busy).
+bool comm_request_score_estimate(uint8_t current_player, int consecutive_passes, int moves_made);
 void comm_cancel(void);
 
 #endif

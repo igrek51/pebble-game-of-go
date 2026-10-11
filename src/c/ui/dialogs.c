@@ -171,19 +171,37 @@ void show_scroll_dialog(const char *message) {
 }
 
 // Game Over Dialog
-static void gameover_window_load(Window *window) {
-    Layer *window_layer = window_get_root_layer(window);
-    GRect bounds = layer_get_bounds(window_layer);
-
+static void gameover_build_message(char *message, size_t len) {
+    if (go_server && go_have) {
+        // Katago final: winner + margin from the server lead.
+        int m = go_lead_10x < 0 ? -go_lead_10x : go_lead_10x;
+        snprintf(message, len, "%s\n\n%c+%d.%d",
+                 go_lead_10x >= 0 ? "Black wins!" : "White wins!",
+                 go_lead_10x >= 0 ? 'B' : 'W', m / 10, m % 10);
+        return;
+    }
+    if (go_server) {
+        // Still loading (or failed): winner unknown yet.
+        snprintf(message, len, "%s",
+                 server_score_failed ? "-" : "Counting...");
+        return;
+    }
     int black_total_10x = black_score * 10;
     int white_total_10x = white_score * 10 + 75;
     bool black_wins = black_total_10x > white_total_10x;
     const char *winner = black_wins ? "Black wins!" : "White wins!";
 
-    static char message[128];
-    snprintf(message, sizeof(message), "%s\n\nB: %d.%d  W: %d.%d", winner,
+    snprintf(message, len, "%s\n\nB: %d.%d  W: %d.%d", winner,
              black_total_10x / 10, black_total_10x % 10, white_total_10x / 10,
              white_total_10x % 10);
+}
+
+static void gameover_window_load(Window *window) {
+    Layer *window_layer = window_get_root_layer(window);
+    GRect bounds = layer_get_bounds(window_layer);
+
+    static char message[128];
+    gameover_build_message(message, sizeof(message));
 
     s_gameover_text_layer = text_layer_create(bounds);
     text_layer_set_text(s_gameover_text_layer, message);
@@ -234,6 +252,14 @@ void hide_gameover_dialog(void) {
         s_gameover_dismiss_callback();
     if (s_canvas_layer)
         layer_mark_dirty(s_canvas_layer);
+}
+
+void gameover_refresh(void) {
+    if (!s_gameover_dialog || !s_gameover_text_layer)
+        return;
+    static char message[128];
+    gameover_build_message(message, sizeof(message));
+    text_layer_set_text(s_gameover_text_layer, message);
 }
 
 // Error Dialog

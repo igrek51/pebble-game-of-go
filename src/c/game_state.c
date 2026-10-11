@@ -30,6 +30,12 @@ bool terr_estimate_on = false;
 // AI engine setting (Settings menu, persisted, default MCTS). Applies to
 // new companion requests; not reset by New Game.
 int ai_engine = AI_ENGINE_MCTS;
+// Final-result source at game over (RAM-only, reset by New Game).
+bool go_server = false;
+int go_moves = -1;
+int go_passes = -1;
+int go_lead_10x = 0;
+bool go_have = false;
 // Katago level (Settings, persisted, default 12k): index into the
 // rank-profile table below. Only used with AI_ENGINE_KATAGO.
 int katago_level = 1;
@@ -193,6 +199,10 @@ void init_board_logic(void) {
     move_hist_len = 0;
     hist_complete = true;
     hist_snapshot();
+    go_server = false;
+    go_moves = -1;
+    go_passes = -1;
+    go_have = false;
     server_score_10x = 0;
     server_score_pct = 50;
     server_score_moves = -1;
