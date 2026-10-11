@@ -38,15 +38,14 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
     // like the regular turn label does.
     bool thinking = (ui_state == AI_THINKING);
     // Wide score slot whenever a fresh server estimate carries a winrate
-    // (Katago mode); otherwise the classic 60px slot.
+    // (Katago mode: "W+12.5 100%"); otherwise the classic 60px slot.
     int srv_pct_tmp = -1;
     bool srv_fresh = (ui_state != GAME_OVER_STATE) &&
                      server_score_fresh(NULL, &srv_pct_tmp);
-    int score_w = srv_fresh ? 100 : 60;
+    int score_w = srv_fresh ? 95 : 60;
     if (thinking) {
-        // Full "White thinking 5s" needs ~130px at 18pt, so the label rect
-        // is widened (for every state — one system) and the score rect
-        // narrowed to match; worst-case scores ("B+81.5") still fit.
+        // 14pt turn label: "White thinking 5s" fits the 120px rect;
+        // very long seconds still ellipsize.
         snprintf(left_text, sizeof(left_text), "%s thinking %ds",
                  (current_player == BLACK ? "Black" : "White"),
                  think_elapsed_sec());
@@ -65,23 +64,36 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
                  is_ai ? "is thinking" : "to move");
     }
     graphics_draw_text(ctx, left_text,
-                       fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                       GRect(5, 0, width - score_w - 15, 20),
+                       fonts_get_system_font(FONT_KEY_GOTHIC_14_BOLD),
+                       GRect(5, 2, 120, 20),
                        GTextOverflowModeTrailingEllipsis,
                        GTextAlignmentLeft, NULL);
 
     char right_text[32];
     if (ui_state == GAME_OVER_STATE || ui_state == REPLAY) {
-        int diff_10x = (black_score * 10) - (white_score * 10 + 75);
-        int abs_diff_10x = diff_10x < 0 ? -diff_10x : diff_10x;
+        if (go_server) {
+            // Katago final: server lead (winner + margin), "..." while it
+            // loads, "-" on failure. Local count is known to miscount dead.
+            if (go_have) {
+                int m = go_lead_10x < 0 ? -go_lead_10x : go_lead_10x;
+                snprintf(right_text, sizeof(right_text), "%c+%d.%d",
+                         go_lead_10x >= 0 ? 'B' : 'W', m / 10, m % 10);
+            } else {
+                snprintf(right_text, sizeof(right_text), "%s",
+                         server_score_failed ? "-" : "...");
+            }
+        } else {
+            int diff_10x = (black_score * 10) - (white_score * 10 + 75);
+            int abs_diff_10x = diff_10x < 0 ? -diff_10x : diff_10x;
 
-        snprintf(right_text, sizeof(right_text), "%c%d.5",
-                 (diff_10x >= 0 ? 'B' : 'W'), abs_diff_10x / 10);
+            snprintf(right_text, sizeof(right_text), "%c%d.5",
+                     (diff_10x >= 0 ? 'B' : 'W'), abs_diff_10x / 10);
+        }
     } else {
-        // Fresh server estimate (KataGo /score) outranks the local
-        // influence heuristic; stale/missing falls back to it — except in
-        // Katago mode, where a missing estimate shows "..." instead of a
-        // local guess. A fresh estimate always shows Black's winrate too.
+        // Score and winrate from the side-to-move perspective (White to
+        // move sees W+/W-, Black sees B+/B-). Fresh server estimate
+        // outranks the local influence heuristic — except in Katago mode,
+        // where a missing estimate shows "..." instead of a local guess.
         int diff_10x, pct = -1;
         bool fresh = server_score_fresh(&diff_10x, &pct);
         if (ai_engine == AI_ENGINE_KATAGO && !fresh) {
@@ -91,18 +103,27 @@ void board_layer_update_proc(Layer *layer, GContext *ctx, int selected_row,
             if (!fresh)
                 diff_10x = estimate_score_10x_logic();
             diff_10x = round_10x_to_half(diff_10x);
-            int abs_diff_10x = diff_10x < 0 ? -diff_10x : diff_10x;
+            int rel_10x = (current_player == BLACK) ? diff_10x : -diff_10x;
+            int abs_rel = rel_10x < 0 ? -rel_10x : rel_10x;
+            char who = (current_player == BLACK) ? 'B' : 'W';
             if (fresh) {
-                snprintf(right_text, sizeof(right_text), "B%c%d.%d(%d%%)",
-                         (diff_10x >= 0 ? '+' : '-'), abs_diff_10x / 10,
-                         abs_diff_10x % 10, pct);
+                int show_pct = (current_player == BLACK) ? pct : 100 - pct;
+                snprintf(right_text, sizeof(right_text), "%c%c%d.%d %d%%",
+                         who, (rel_10x >= 0 ? '+' : '-'), abs_rel / 10,
+                         abs_rel % 10, show_pct);
             } else {
-                snprintf(right_text, sizeof(right_text), "B%c%d.%d",
-                         (diff_10x >= 0 ? '+' : '-'), abs_diff_10x / 10,
-                         abs_diff_10x % 10);
+                snprintf(right_text, sizeof(right_text), "%c%c%d.%d",
+                         who, (rel_10x >= 0 ? '+' : '-'), abs_rel / 10,
+                         abs_rel % 10);
             }
         }
     }
+    // Score box erases the turn label underneath, so the full-width
+    // left text never garbles the right-aligned score.
+    graphics_context_set_fill_color(ctx, status_bg_color);
+    graphics_fill_rect(ctx, GRect(width - score_w - 5, 0, score_w + 5, 25),
+                       0, GCornerNone);
+    graphics_context_set_text_color(ctx, status_text_color);
     graphics_draw_text(ctx, right_text,
                        fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
                         GRect(width - score_w - 5, 0, score_w, 20), GTextOverflowModeWordWrap,

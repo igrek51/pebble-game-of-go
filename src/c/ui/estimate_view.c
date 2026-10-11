@@ -14,6 +14,8 @@ static void (*s_on_close)(void) = NULL;
 static uint8_t s_owner[BOARD_SIZE * BOARD_SIZE];
 static bool s_dead[BOARD_SIZE * BOARD_SIZE];
 static int s_diff_10x = 0;
+// Black-relative winrate 0-100 for the snapshot (Katago mode only).
+static int s_pct = 50;
 // True when the shown number is a fresh server estimate; otherwise "..."
 // is drawn instead of a stale/local number (tint/dead marks stay local).
 static bool s_have_server = false;
@@ -34,40 +36,37 @@ static void estimate_update_proc(Layer *layer, GContext *ctx) {
     graphics_context_set_fill_color(ctx, GColorBlue);
     graphics_fill_rect(ctx, GRect(0, 0, width, 25), 0, GCornerNone);
     graphics_context_set_text_color(ctx, GColorWhite);
-    // Fresh server estimate: win chance for the side to move on the left
-    // (server pct is Black-relative, convert for White). Otherwise the
-    // plain title (local heuristic has no winrate).
-    int side_pct = -1;
-    if (server_score_fresh(NULL, &side_pct)) {
-        if (current_player != BLACK)
-            side_pct = 100 - side_pct;
-        char win[16];
-        snprintf(win, sizeof(win), "%s %d%%",
-                 current_player == BLACK ? "Black" : "White", side_pct);
-        graphics_draw_text(ctx, win,
-                           fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                           GRect(5, 0, 110, 20), GTextOverflowModeWordWrap,
-                           GTextAlignmentLeft, NULL);
-    } else {
-        graphics_draw_text(ctx, "Estimate",
-                           fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                           GRect(5, 0, 110, 20), GTextOverflowModeWordWrap,
-                           GTextAlignmentLeft, NULL);
-    }
-    int abs_diff = 0;
-    char score[16];
+    graphics_draw_text(ctx, "Estimate",
+                       fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+                       GRect(5, 0, 110, 20), GTextOverflowModeWordWrap,
+                       GTextAlignmentLeft, NULL);
+    char score[32];
     if (s_have_server || s_show_local) {
-        abs_diff = s_diff_10x < 0 ? -s_diff_10x : s_diff_10x;
-        snprintf(score, sizeof(score), "B%c%d.%d", (s_diff_10x >= 0 ? '+' : '-'),
-                 abs_diff / 10, abs_diff % 10);
+        int rel_10x = (current_player == BLACK) ? s_diff_10x : -s_diff_10x;
+        int abs_rel = rel_10x < 0 ? -rel_10x : rel_10x;
+        char who = (current_player == BLACK) ? 'B' : 'W';
+        if (s_have_server) {
+            int show_pct = (current_player == BLACK) ? s_pct : 100 - s_pct;
+            snprintf(score, sizeof(score), "%c%c%d.%d %d%%",
+                     who, (rel_10x >= 0 ? '+' : '-'), abs_rel / 10,
+                     abs_rel % 10, show_pct);
+        } else {
+            snprintf(score, sizeof(score), "%c%c%d.%d",
+                     who, (rel_10x >= 0 ? '+' : '-'), abs_rel / 10,
+                     abs_rel % 10);
+        }
     } else if (server_score_failed) {
         snprintf(score, sizeof(score), "-");
     } else {
         snprintf(score, sizeof(score), "...");
     }
+    // Score box erases the title underneath, so the two zones never garble.
+    graphics_context_set_fill_color(ctx, GColorBlue);
+    graphics_fill_rect(ctx, GRect(width - 115, 0, 115, 25), 0, GCornerNone);
+    graphics_context_set_text_color(ctx, GColorWhite);
     graphics_draw_text(ctx, score,
                        fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-                       GRect(width - 80, 0, 75, 20), GTextOverflowModeWordWrap,
+                       GRect(width - 115, 0, 110, 20), GTextOverflowModeWordWrap,
                        GTextAlignmentRight, NULL);
 
     // Board background (same geometry as the game board).
@@ -192,7 +191,7 @@ void estimate_view_show(void (*on_close)(void)) {
         if (sown) {
             for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; i++)
                 s_owner[i] = server_owner_color(sown[i]);
-            s_have_server = server_score_fresh(&s_diff_10x, NULL);
+            s_have_server = server_score_fresh(&s_diff_10x, &s_pct);
             if (s_have_server)
                 s_diff_10x = round_10x_to_half(s_diff_10x);
             s_show_local = false;
@@ -238,7 +237,7 @@ void estimate_view_invalidate(void) {
 bool estimate_view_refresh_score(void) {
     if (!s_open || s_have_server)
         return false;
-    if (!server_score_fresh(&s_diff_10x, NULL))
+    if (!server_score_fresh(&s_diff_10x, &s_pct))
         return false;
     s_diff_10x = round_10x_to_half(s_diff_10x);
     s_have_server = true;
