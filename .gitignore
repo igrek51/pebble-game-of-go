@@ -6,6 +6,9 @@ tests/test_match
 tests/test_fallback
 pebble_screenshot_*.png
 
+# local-only agent/tool settings
+.claude/settings.local.json
+
 # eval vendor binaries + models (large, downloadable)
 tools/eval/vendor/*.zip
 tools/eval/vendor/*.gz
