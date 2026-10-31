@@ -1,15 +1,17 @@
+name: katago
+
 services:
   katago:
+    image: ${KATAGO_IMAGE:-registry.gitlab.com/igrek51/registry/katago:latest}
     container_name: katago
-    image: ${KATAGO_IMAGE:-registry.gitlab.com/igrek51/katago:1.0}
+    restart: unless-stopped
     ports:
-      - "0.0.0.0:2718:2718"
+      - "127.0.0.1:2718:2718"
     environment:
       MOVE_VISITS: "8"
       SCORE_VISITS: "150"
     stdin_open: true
     tty: true
-    restart: unless-stopped
     stop_grace_period: 30s
     healthcheck:
       test: ["CMD-SHELL", "python3 -c \"import json,urllib.request;urllib.request.urlopen('http://localhost:2718/health')\""]

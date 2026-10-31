@@ -1,0 +1,70 @@
+# KataGo HTTP server - arm64 variant (titan, aarch64).
+#
+# Same server.py, models, env and port as the amd64 image on sirius. The only difference:
+# KataGo v1.17.1 is COMPILED FROM SOURCE, because the GitHub release ships only linux-x64
+# zips (eigen/eigenavx2/opencl/cuda - verified against the release manifest, no aarch64 asset).
+#
+# Build (context = the server dir, which contains server.py):
+#   docker build -t registry.gitlab.com/igrek51/registry/katago:latest \
+#     -f Dockerfile.arm64 .
+# or via: make deploy   (server/Makefile)
+#
+# Flags verified against KataGo cpp/CMakeLists.txt @ v1.17.1:
+#   - NO_GIT_REVISION is a real CMake option and skips the git-describe step entirely
+#     (hence a plain source tarball, no git clone needed)
+#   - ARM is detected automatically (-fsigned-char is added; -mfpmath=sse is not)
+#   - USE_AVX2 must NOT be set on aarch64; Eigen is the CPU backend (no GPU on titan)
+#   - CMAKE_BUILD_TYPE=Release -> -O3 -DNDEBUG (CMakeLists default is RelWithDebInfo/-g -O2)
+
+# Pinned to bookworm: trixie renamed libzip4 to libzip5; KataGo links libzip dynamically.
+FROM python:3.12-slim-bookworm AS katago-build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      curl ca-certificates cmake g++ make \
+      libeigen3-dev zlib1g-dev libzip-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN mkdir -p /katago-src \
+    && curl -sL https://github.com/lightvector/KataGo/archive/refs/tags/v1.17.1.tar.gz \
+       | tar -xz -C /katago-src --strip-components=1
+
+WORKDIR /katago-src/cpp
+RUN cmake . -DUSE_BACKEND=EIGEN -DCMAKE_BUILD_TYPE=Release -DNO_GIT_REVISION=1 \
+    && make -j"$(nproc)" \
+    && ./katago version
+
+# ---------------------------------------------------------------- runtime
+FROM python:3.12-slim-bookworm
+
+# ca-certificates+curl: model downloads; libzip4: runtime dep of the engine
+# (libzip found at build time -> linked dynamically; zlib is part of the base image)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      curl ca-certificates libzip4 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY --from=katago-build /katago-src/cpp/katago /opt/katago/katago
+RUN chmod +x /opt/katago/katago && /opt/katago/katago version
+
+# Main net: 9x9-finetuned b18 - the strongest KataGo net for 9x9, used
+# for the search behind /move and the /score estimates. (pinned URLs, as on sirius)
+RUN curl -sL -o /opt/katago/model.bin.gz \
+      https://media.katagotraining.org/uploaded/networks/models_extra/kata9x9-b18c384nbt-20231025.bin.gz
+
+# Human SL net (b18, ~99MB) for rank-profiled move sampling
+RUN curl -sL -o /opt/katago/human.bin.gz \
+      https://media.katagotraining.org/uploaded/networks/models_extra/b18c384nbt-humanv0.bin.gz
+
+COPY server.py /app/server.py
+
+ENV PORT=2718 \
+    KATAGO_BIN=/opt/katago/katago \
+    MODEL_PATH=/opt/katago/model.bin.gz \
+    HUMAN_MODEL_PATH=/opt/katago/human.bin.gz \
+    MOVE_VISITS=8 \
+    SCORE_VISITS=150
+
+EXPOSE 2718
+
+CMD ["python3", "/app/server.py"]
