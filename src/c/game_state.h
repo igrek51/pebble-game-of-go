@@ -49,11 +49,14 @@ extern int go_moves;
 extern int go_passes;
 extern int go_lead_10x;
 extern bool go_have;
-// Katago level index (default 0 = 12k). Profile string for the server,
-// level count for cycling in Settings.
+// Katago level index into the rank table (default 1 = 12k). Profile string
+// for the server, level count for cycling in Settings, and a name lookup so
+// a persisted rank keeps its meaning if the table is reordered or extended.
 extern int katago_level;
 const char *katago_profile(void);
 int katago_level_count(void);
+// Index of a profile name, or -1 when the name is unknown/absent.
+int katago_level_from_profile(const char *name);
 
 void init_board_logic(void);
 

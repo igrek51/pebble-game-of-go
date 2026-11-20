@@ -61,6 +61,7 @@ void test_influence_agrees_settled(void);
 void test_influence_open_single(void);
 void test_influence_walls_and_ties(void);
 void test_influence_11_invariant(void);
+void test_katago_level_names(void);
 
 int main() {    printf("Running board logic tests...\n");
     test_liberties();
@@ -76,6 +77,7 @@ int main() {    printf("Running board logic tests...\n");
     test_influence_open_single();
     test_influence_walls_and_ties();
     test_influence_11_invariant();
+    test_katago_level_names();
     printf("All board logic tests passed!\n");
     return 0;
 }
@@ -299,6 +301,23 @@ static void check_invariant(void) {
             ws++;
     }
     ASSERT(diff == bs * 10 - (ws * 10 + 75));
+}
+
+// A persisted rank name must resolve back to the same table entry, so a
+// reordered/extended table cannot move a player to a different rank.
+void test_katago_level_names() {
+    printf("  Testing katago level name lookup...\n");
+    int n = katago_level_count();
+    ASSERT(n > 0);
+    for (int i = 0; i < n; i++) {
+        katago_level = i;
+        ASSERT(katago_level_from_profile(katago_profile()) == i);
+    }
+    ASSERT(katago_level_from_profile("rank_99z") == -1);
+    ASSERT(katago_level_from_profile("") == -1);
+    ASSERT(katago_level_from_profile(NULL) == -1);
+    katago_level = 1;
+    ASSERT(strcmp(katago_profile(), "rank_12k") == 0);
 }
 
 void test_influence_11_invariant() {

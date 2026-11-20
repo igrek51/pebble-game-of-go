@@ -1,6 +1,5 @@
 # Minimal KataGo HTTP server (CPU): KataGo v1.17.1 EigenAVX2 +
-# 9x9-finetuned b18 main net + b18 Human SL net. Pinned URLs for
-# reproducible builds.
+# b10c128 main net + b18 Human SL net. Pinned URLs for reproducible builds.
 FROM python:3.12-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -23,10 +22,16 @@ RUN curl -sL -o /tmp/katago.zip \
     && LD_LIBRARY_PATH=/opt/katago/katago-libs ./katago version
 ENV LD_LIBRARY_PATH=/opt/katago/katago-libs
 
-# Main net: 9x9-finetuned b18 — the strongest KataGo net for 9x9, used
-# for the search behind /move and the /score estimates.
-RUN curl -sL -o /opt/katago/model.bin.gz \
-      https://media.katagotraining.org/uploaded/networks/models_extra/kata9x9-b18c384nbt-20231025.bin.gz
+# Main net: b10c128. The 9x9 b18 net is stronger, but its winrate head is
+# far too sharp on 9x9 (an even position came out at ~11% instead of ~45%,
+# and a half-point lead at ~90%), which the watch shows as a percentage in
+# the status banner. b10's winrate is calibrated and its score lead tracks
+# b18's to within a point, so it is the better net for the displayed estimate.
+# It does not affect /move: that samples humanPolicy from the Human SL net.
+# The kata1 nets ship as gzipped text weights, so the .txt.gz name is what
+# makes KataGo pick the text parser.
+RUN curl -sL -o /opt/katago/model.txt.gz \
+      https://media.katagotraining.org/uploaded/networks/models/kata1/kata1-b10c128-s41138688-d27396855.txt.gz
 
 # Human SL net (b18, ~99MB) for rank-profiled move sampling
 RUN curl -sL -o /opt/katago/human.bin.gz \
@@ -36,7 +41,7 @@ COPY server.py /app/server.py
 
 ENV PORT=2718 \
     KATAGO_BIN=/opt/katago/katago \
-    MODEL_PATH=/opt/katago/model.bin.gz \
+    MODEL_PATH=/opt/katago/model.txt.gz \
     HUMAN_MODEL_PATH=/opt/katago/human.bin.gz \
     MOVE_VISITS=8 \
     SCORE_VISITS=150

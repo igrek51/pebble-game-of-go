@@ -90,6 +90,7 @@ enum {
     PKEY_TERR_EST,
     PKEY_AI_ENGINE,
     PKEY_KATAGO_LEVEL,
+    PKEY_KATAGO_PROFILE, // rank name; authoritative over the index
 };
 
 static void save_game_state(void) {
@@ -114,7 +115,10 @@ static void save_game_state(void) {
     persist_write_int(PKEY_KO_ACTIVE, ko_active ? 1 : 0);
     persist_write_int(PKEY_TERR_EST, terr_estimate_on ? 1 : 0);
     persist_write_int(PKEY_AI_ENGINE, ai_engine);
+    // Both forms: the name is what survives a rank-table change, the index
+    // keeps an older build functional after a downgrade.
     persist_write_int(PKEY_KATAGO_LEVEL, katago_level);
+    persist_write_string(PKEY_KATAGO_PROFILE, katago_profile());
     APP_LOG(APP_LOG_LEVEL_INFO, "game: state saved (moves=%d)", moves_made);
 }
 
@@ -158,12 +162,28 @@ static bool load_game_state(void) {
         if (loaded_engine == AI_ENGINE_KATAGO)
             ai_engine = AI_ENGINE_KATAGO;
     }
+    // The level used to be persisted as a bare table index, so prepending a
+    // rank silently changed the meaning of every saved value (89a0427 put
+    // rank_14k in front and turned a saved 10k into 12k). The name wins now;
+    // the index is still read for saves written before that key existed, and
+    // the name is backfilled so the next table edit cannot shift it again.
     katago_level = 1; // 12k default
-    if (persist_exists(PKEY_KATAGO_LEVEL)) {
+    int named_level = -1;
+    if (persist_exists(PKEY_KATAGO_PROFILE)) {
+        char saved_profile[16];
+        if (persist_read_string(PKEY_KATAGO_PROFILE, saved_profile,
+                                sizeof(saved_profile)) > 0)
+            named_level = katago_level_from_profile(saved_profile);
+    }
+    if (named_level >= 0) {
+        katago_level = named_level;
+    } else if (persist_exists(PKEY_KATAGO_LEVEL)) {
         int loaded_level = persist_read_int(PKEY_KATAGO_LEVEL);
         if (loaded_level >= 0 && loaded_level < katago_level_count())
             katago_level = loaded_level;
     }
+    if (named_level < 0)
+        persist_write_string(PKEY_KATAGO_PROFILE, katago_profile());
     // A thinking/cursor state means nothing after a restart (any other
     // value, including garbage, lands here too); an AI turn is re-armed
     // by the caller. A finished game is re-shown by the caller.

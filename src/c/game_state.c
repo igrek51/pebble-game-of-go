@@ -36,8 +36,9 @@ int go_moves = -1;
 int go_passes = -1;
 int go_lead_10x = 0;
 bool go_have = false;
-// Katago level (Settings, persisted, default 12k): index into the
-// rank-profile table below. Only used with AI_ENGINE_KATAGO.
+// Katago level (Settings, persisted, default index 1 = 12k): index into the
+// rank-profile table below. Only used with AI_ENGINE_KATAGO. The persisted
+// form is the name (see katago_level_from_profile), not this index.
 int katago_level = 1;
 
 static const char *const katago_profiles[] = {
@@ -54,6 +55,16 @@ const char *katago_profile(void) {
 
 int katago_level_count(void) {
     return (int)(sizeof(katago_profiles) / sizeof(katago_profiles[0]));
+}
+
+int katago_level_from_profile(const char *name) {
+    if (!name || !name[0])
+        return -1;
+    int n = (int)(sizeof(katago_profiles) / sizeof(katago_profiles[0]));
+    for (int i = 0; i < n; i++)
+        if (strcmp(katago_profiles[i], name) == 0)
+            return i;
+    return -1;
 }
 
 // Move history for Undo: 0-80 stone position, -1 pass, RAM-only. Stones
